@@ -30,6 +30,39 @@ The tool can solve the following CAPTCHA types found on the `2captcha.com/demo/`
 - Python 3.7+
 - Mozilla Firefox
 
+<!-- AD -->
+---
+## Sponsors
+
+✅ CapMonster.Cloud — Fast, Reliable CAPTCHA Solving for Automation & Scraping
+
+[![CapMonster Cloud](https://help.zennolab.com/upload/u/02/020538b7c128.png)](https://capmonster.cloud/en/?utm_source=github&utm_campaign=aydinnyunus_ai-captcha-bypass)
+
+If you are tired of wasting time solving endless CAPTCHAs during scraping, automation, or testing — we’ve got a solution for you.  
+Meet CapMonster.Cloud — the AI-powered CAPTCHA solving service trusted by thousands of users worldwide. 🚀
+
+--
+
+🔥 **Why users love CapMonster.Cloud**
+  
+💡 Very high success rates (up to 99%)  
+⚡ Super fast solving times  
+💲 Affordable transparent pricing (pay per 1,000 CAPTCHAs)  
+🔌 Easy integration via API + browser extensions  
+⭐ Excellent reviews on TrustPilot, SourceForge, SaaSHub, AlternativeTo
+
+--
+
+🔗 **Useful Links**
+
+💲 [Pricing & Supported CAPTCHA Types (25+ types supported)](https://capmonster.cloud/en?utm_source=github&utm_campaign=aydinnyunus_ai-captcha-bypass#new-plans)  
+📘 [API Documentation](https://docs.capmonster.cloud/?utm_source=github&utm_campaign=aydinnyunus_ai-captcha-bypass)  
+💡 Main Website → [capmonster.cloud](https://capmonster.cloud/en/?utm_source=github&utm_campaign=aydinnyunus_ai-captcha-bypass)  
+⭐ Reviews → [TrustPilot](https://www.trustpilot.com/review/capmonster.cloud)
+
+---
+<!-- /AD -->
+
 ## Installation & Configuration
 
 1.  **Clone the repository:**
