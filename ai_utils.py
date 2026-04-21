@@ -346,10 +346,10 @@ def ask_if_tile_contains_object_gemini(image_path, object_name, model=None):
     response = gemini_client.models.generate_content(model=model_to_use, contents=[types.Part.from_bytes(data=image_bytes, mime_type='image/png'), prompt])
     return response.text.strip().lower() 
 
-# Boskuu fork note: legacy helper functions remain below for compatibility, but new provider routing should prefer get_backend(provider).
+# Fork note: legacy helper functions remain below for compatibility, but new provider routing should prefer get_backend(provider).
 
 
-# --- Boskuu fork provider router helpers ---
+# --- Fork provider router helpers ---
 def ask_text_with_provider(image_path, provider='openai', model=None):
     prompt = "Act as a blind person assistant. Read the text from the image and give me only the text answer. Give the only text from the image. If there is no text, give me empty string."
     return get_backend(provider).generate_text_from_image(prompt, image_path, model).strip()
