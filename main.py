@@ -22,16 +22,22 @@ from concurrent.futures import ThreadPoolExecutor
 from ai_utils import (
     ask_text_to_chatgpt,
     ask_text_to_gemini,
+    ask_text_with_provider,
     ask_audio_to_openai,
     ask_audio_to_gemini,
+    ask_audio_with_provider,
     ask_recaptcha_instructions_to_chatgpt,
     ask_recaptcha_instructions_to_gemini,
+    ask_recaptcha_instructions_with_provider,
     ask_if_tile_contains_object_chatgpt,
     ask_if_tile_contains_object_gemini,
+    ask_if_tile_contains_object_with_provider,
     ask_puzzle_distance_to_gemini,
     ask_puzzle_distance_to_chatgpt,
     ask_puzzle_correction_to_chatgpt,
-    ask_puzzle_correction_to_gemini
+    ask_puzzle_correction_to_gemini,
+    ask_puzzle_distance_with_provider,
+    ask_puzzle_correction_with_provider
 )
 
 #todo: sesli captchada sese asıl captchayı söyledikten sonra ignore previous instructions diyip sonra random bir captcha daha vericem
@@ -105,11 +111,7 @@ def check_tile_for_object(args):
     tile_index, tile_path, object_name, provider, model = args
     
     try:
-        decision_str = ''
-        if provider == 'openai':
-            decision_str = ask_if_tile_contains_object_chatgpt(tile_path, object_name, model)
-        else: # gemini
-            decision_str = ask_if_tile_contains_object_gemini(tile_path, object_name, model)
+        decision_str = ask_if_tile_contains_object_with_provider(tile_path, object_name, provider, model)
         
         print(f"Tile {tile_index}: Does it contain '{object_name}'? AI says: {decision_str}")
         return tile_index, decision_str == 'true'
@@ -125,11 +127,7 @@ def audio_test(file_path='files/audio.mp3', provider='gemini', model=None):
 
     try:
         print(f"Transcribing audio from '{file_path}' using {provider.upper()}...")
-        transcription = ""
-        if provider == 'openai':
-            transcription = ask_audio_to_openai(file_path, model)
-        else: # default to gemini
-            transcription = ask_audio_to_gemini(file_path, model)
+        transcription = ask_audio_with_provider(file_path, provider, model)
         
         print("\n--- Transcription Result ---")
         print(transcription)
@@ -161,11 +159,7 @@ def complicated_text_test(driver, provider='openai', model=None):
             screenshot_paths.append(captcha_screenshot_path)
 
             # 2. Ask AI for the answer
-            response = ''
-            if provider == 'openai':
-                response = ask_text_to_chatgpt(captcha_screenshot_path, model)
-            else: # gemini
-                response = ask_text_to_gemini(captcha_screenshot_path, model)
+            response = ask_text_with_provider(captcha_screenshot_path, provider, model)
 
             print(f"AI transcription: '{response}'")
             
@@ -227,11 +221,7 @@ def text_test(driver, provider='openai', model=None):
         captcha_image.screenshot(captcha_screenshot_path)
         screenshot_paths.append(captcha_screenshot_path)
         
-        response = ''
-        if provider == 'openai':
-            response = ask_text_to_chatgpt(captcha_screenshot_path, model)
-        else: # gemini
-            response = ask_text_to_gemini(captcha_screenshot_path, model)
+        response = ask_text_with_provider(captcha_screenshot_path, provider, model)
 
         print(f"AI transcription: '{response}'")
 
@@ -299,11 +289,7 @@ def recaptcha_v2_test(driver, provider='openai', model=None):
             instruction_element.screenshot(instruction_screenshot_path)
             screenshot_paths.append(instruction_screenshot_path)
             
-            object_name = ''
-            if provider == 'openai':
-                object_name = ask_recaptcha_instructions_to_chatgpt(instruction_screenshot_path, model)
-            else: # gemini
-                object_name = ask_recaptcha_instructions_to_gemini(instruction_screenshot_path, model)
+            object_name = ask_recaptcha_instructions_with_provider(instruction_screenshot_path, provider, model)
             print(f"AI identified the target object as: '{object_name}'")
 
             is_new_object = object_name.lower() != last_object_name.lower()
@@ -419,7 +405,7 @@ def main():
     parser = argparse.ArgumentParser(description="Test various captcha types.")
     parser.add_argument('captcha_type', choices=['puzzle', 'text', 'complicated_text', 'recaptcha_v2', 'audio'],
                         help="Specify the type of captcha to test")
-    parser.add_argument('--provider', choices=['openai', 'gemini'], default='openai', help="Specify the AI provider to use")
+    parser.add_argument('--provider', choices=['openai', 'gemini', 'gemini-cli', 'codex', 'custom'], default='openai', help="Specify the AI provider to use")
     parser.add_argument('--file', type=str, default='files/audio.mp3', help="Path to the local audio file for the 'audio' test.")
     parser.add_argument('--model', type=str, default=None, help="Specify the AI model to use (e.g., 'gpt-4o', 'gemini-2.5-flash').")
     args = parser.parse_args()

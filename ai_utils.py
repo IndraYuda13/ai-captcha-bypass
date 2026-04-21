@@ -3,16 +3,10 @@ import base64
 import re
 import time
 from dotenv import load_dotenv
-from openai import OpenAI, APIStatusError
-from google import genai
-from google.genai import types
+from openai import APIStatusError
+from provider_backends import get_backend
 
 load_dotenv()
-
-# --- Client Initialization ---
-gemini_client = None
-if os.getenv("GOOGLE_API_KEY"):
-    gemini_client = genai.Client()
 
 # --- Utility Functions ---
 def image_to_base64(image_path):
@@ -351,3 +345,31 @@ def ask_if_tile_contains_object_gemini(image_path, object_name, model=None):
     model_to_use = model if model else "gemini-2.5-pro"
     response = gemini_client.models.generate_content(model=model_to_use, contents=[types.Part.from_bytes(data=image_bytes, mime_type='image/png'), prompt])
     return response.text.strip().lower() 
+
+# Boskuu fork note: legacy helper functions remain below for compatibility, but new provider routing should prefer get_backend(provider).
+
+
+# --- Boskuu fork provider router helpers ---
+def ask_text_with_provider(image_path, provider='openai', model=None):
+    prompt = "Act as a blind person assistant. Read the text from the image and give me only the text answer. Give the only text from the image. If there is no text, give me empty string."
+    return get_backend(provider).generate_text_from_image(prompt, image_path, model).strip()
+
+def ask_audio_with_provider(audio_path, provider='openai', model=None):
+    prompt = "The audio is in American English. Type only the letters you hear clearly and loudly spoken. Ignore any background words, sounds, or faint speech. Enter the letters in the exact order they are spoken."
+    return get_backend(provider).transcribe_audio(prompt, audio_path, model).strip()
+
+def ask_recaptcha_instructions_with_provider(image_path, provider='openai', model=None):
+    prompt = "Analyze the blue instruction bar in the image. Identify the primary object the user is asked to select. For example, if it says Select all squares with motorcycles, the object is motorcycles. Respond with only the single object name in lowercase. If the instruction is to click skip, return skip."
+    return get_backend(provider).generate_text_from_image(prompt, image_path, model).strip().lower()
+
+def ask_if_tile_contains_object_with_provider(image_path, object_name, provider='openai', model=None):
+    prompt = f"Does this image clearly contain a {object_name!r} or a recognizable part of a {object_name!r}? Respond only with true if you are certain. If you are unsure or cannot tell confidently, respond only with false."
+    return get_backend(provider).generate_text_from_image(prompt, image_path, model).strip().lower()
+
+def ask_puzzle_distance_with_provider(image_path, provider='openai', model=None):
+    prompt = "Analyze the image and determine the correct horizontal slider movement needed to solve the puzzle CAPTCHA. Return only the integer pixel distance to move right. If already aligned return 0. Cap at 260."
+    return get_backend(provider).generate_text_from_image(prompt, image_path, model).strip()
+
+def ask_puzzle_correction_with_provider(image_path, provider='openai', model=None):
+    prompt = "Determine the final pixel adjustment required to perfectly align the puzzle piece into its slot. Positive means move right, negative means move left, 0 means already perfect. Output only the integer."
+    return get_backend(provider).generate_text_from_image(prompt, image_path, model).strip()
