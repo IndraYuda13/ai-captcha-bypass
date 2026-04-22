@@ -1,0 +1,222 @@
+def recaptcha_v2_test(driver, provider='openai', model=None):
+    """
+    Solves a single reCAPTCHA v2 instance on the 2captcha demo page.
+    Returns 1 for success, 0 for failure.
+    """
+    def recaptcha_checkbox_verified(timeout=8):
+        driver.switch_to.default_content()
+        frame = WebDriverWait(driver, timeout).until(EC.presence_of_element_located((By.XPATH, "//iframe[@title='reCAPTCHA']")))
+        driver.switch_to.frame(frame)
+        try:
+            anchor = WebDriverWait(driver, timeout).until(EC.presence_of_element_located((By.ID, 'recaptcha-anchor')))
+            checked = (anchor.get_attribute('aria-checked') or '').lower()
+            return checked == 'true'
+        finally:
+            driver.switch_to.default_content()
+
+    driver.get("https://2captcha.com/demo/recaptcha-v2")
+    
+    screenshot_paths = []
+    try:
+        # --- Start the challenge ---
+        recaptcha_frame = WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.XPATH, "//iframe[@title='reCAPTCHA']")))
+        driver.switch_to.frame(recaptcha_frame)
+        WebDriverWait(driver, 10).until(EC.element_to_be_clickable((By.CLASS_NAME, "recaptcha-checkbox-border"))).click()
+        driver.switch_to.default_content()
+        time.sleep(2)
+
+        # --- Loop to solve image challenges as long as they appear ---
+        MAX_CHALLENGE_ATTEMPTS = 5
+        clicked_tile_indices = set()
+        last_object_name = ""
+        num_last_clicks = 0
+        for attempt in range(MAX_CHALLENGE_ATTEMPTS):
+            print(f"\nreCAPTCHA image challenge attempt {attempt + 1}/{MAX_CHALLENGE_ATTEMPTS}...")
+            
+            # --- Check if a puzzle is present ---
+            try:
+                driver.switch_to.default_content()
+                challenge_iframe = WebDriverWait(driver, 5).until(EC.presence_of_element_located((By.XPATH, "//iframe[contains(@title, 'recaptcha challenge expires in two minutes')]")))
+                driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", challenge_iframe)
+                time.sleep(0.5)
+                driver.switch_to.frame(challenge_iframe)
+            except Exception:
+                print("No new image challenge found. Proceeding to final submission.")
+                break # Exit the loop
+
+            # --- If puzzle is found, solve it ---
+            instruction_element = WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.CLASS_NAME, "rc-imageselect-instructions")))
+            driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", instruction_element)
+            time.sleep(0.2)
+            instruction_screenshot_path = f'screenshots/recaptcha_instruction_{attempt + 1}.png'
+            try:
+                instruction_element.screenshot(instruction_screenshot_path)
+            except Exception:
+                challenge_iframe.screenshot(instruction_screenshot_path)
+            screenshot_paths.append(instruction_screenshot_path)
+            
+            object_name = ask_recaptcha_instructions_with_provider(instruction_screenshot_path, provider, model)
+            print(f"AI identified the target object as: '{object_name}'")
+
+            is_new_object = object_name.lower() != last_object_name.lower()
+            if is_new_object:
+                print(f"New challenge object detected ('{object_name}'). Resetting clicked tiles.")
+                clicked_tile_indices = set()
+                last_object_name = object_name
+            elif num_last_clicks >= 3:
+                print("Previously clicked 3 or more tiles, assuming a new challenge. Resetting clicked tiles.")
+                clicked_tile_indices = set()
+            else:
+                print("Same challenge object and < 3 tiles clicked previously. Will not re-click already selected tiles.")
+
+            table = WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.XPATH, "//table[contains(@class, 'rc-imageselect-table')]")))
+            driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", table)
+            time.sleep(0.5)
+            all_tiles = WebDriverWait(driver, 10).until(lambda d: table.find_elements(By.TAG_NAME, "td"))
+
+            grid_path = f'screenshots/recaptcha_grid_{attempt + 1}.png'
+            table.screenshot(grid_path)
+            screenshot_paths.append(grid_path)
+            grid_img = Image.open(grid_path)
+            grid_width, grid_height = grid_img.size
+            tile_count = len(all_tiles)
+            cols = 4 if tile_count >= 16 else 3
+            rows = max(1, tile_count // cols)
+            tile_w = grid_width // cols
+            tile_h = grid_height // rows
+
+            tile_paths = []
+            for i in range(tile_count):
+                tile_path = f'screenshots/tile_{attempt + 1}_{i}.png'
+                row = i // cols
+                col = i % cols
+                left = col * tile_w
+                top = row * tile_h
+                right = (col + 1) * tile_w if col < cols - 1 else grid_width
+                bottom = (row + 1) * tile_h if row < rows - 1 else grid_height
+                tile_img = grid_img.crop((left, top, right, bottom))
+                tile_img.save(tile_path)
+                screenshot_paths.append(tile_path)
+                tile_paths.append(tile_path)
+
+            tasks = [(i, path, object_name, provider, model) for i, path in enumerate(tile_paths)]
+            tiles_to_click_this_round = []
+            with ThreadPoolExecutor(max_workers=len(all_tiles)) as executor:
+                results = executor.map(check_tile_for_object, tasks)
+                for tile_index, should_click in results:
+                    if should_click:
+                        tiles_to_click_this_round.append(tile_index)
+
+            current_attempt_tiles = set(tiles_to_click_this_round)
+            new_tiles_to_click = current_attempt_tiles - clicked_tile_indices
+            num_last_clicks = len(new_tiles_to_click)
+
+            print(f"[TRACE] recaptcha round={attempt + 1} target={object_name} tile_count={len(all_tiles)} new_clicks={len(new_tiles_to_click)}")
+            print(f"\nAI identified tiles for clicking: {sorted(list(current_attempt_tiles))}")
+            print(f"Already clicked tiles: {sorted(list(clicked_tile_indices))}")
+            print(f"Clicking {len(new_tiles_to_click)} new tiles...")
+            
+            for i in sorted(list(new_tiles_to_click)):
+                try:
+                    all_tiles = table.find_elements(By.TAG_NAME, "td")
+                    tile = all_tiles[i]
+                    driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", tile)
+                    time.sleep(0.1)
+                    if tile.is_displayed() and tile.is_enabled():
+                        try:
+                            tile.click()
+                        except Exception:
+                            driver.execute_script("arguments[0].click();", tile)
+                        time.sleep(random.uniform(0.2, 0.5))
+                except Exception as e:
+                    print(f"Could not click tile {i}, it might be already selected or disabled. Error: {e}")
+            
+            clicked_tile_indices.update(new_tiles_to_click)
+
+            try:
+                verify_button = WebDriverWait(driver, 5).until(EC.element_to_be_clickable((By.ID, "recaptcha-verify-button")))
+                verify_button.click()
+                time.sleep(1.5) # Wait for state change
+
+                # After clicking, check if the button is now disabled, which indicates success
+                verify_button_after_click = driver.find_element(By.ID, "recaptcha-verify-button")
+                if verify_button_after_click.get_attribute("disabled"):
+                    print("Verify button is disabled. Image challenge passed.")
+                    driver.switch_to.default_content()
+                    print("reCAPTCHA v2 passed successfully!")
+        
+                    final_success_path = f"screenshots/final_success_recaptcha_v2_{datetime.now().strftime('%H%M%S')}.png"
+                    driver.save_screenshot(final_success_path)
+                    screenshot_paths.append(final_success_path)
+                    
+                    create_success_gif(screenshot_paths, output_folder=f"successful_solves/recaptcha_v2_{provider}")
+                    return 1
+                else:
+                    # This case handles "check new images" - we just let the loop continue
+                    print("Verify button still active, likely a new challenge was served.")
+
+            except Exception:
+                print("Verify button not found after clicking tiles, checking main checkbox state.")
+                if recaptcha_checkbox_verified(timeout=6):
+                    print("Main reCAPTCHA checkbox is verified.")
+                    break
+                print("Main checkbox not verified yet, waiting for refreshed challenge to settle.")
+                driver.switch_to.default_content()
+                time.sleep(2)
+                try:
+                    challenge_iframe = WebDriverWait(driver, 8).until(EC.presence_of_element_located((By.XPATH, "//iframe[contains(@title, 'recaptcha challenge expires in two minutes')]")))
+                    driver.switch_to.frame(challenge_iframe)
+                    WebDriverWait(driver, 8).until(EC.presence_of_element_located((By.CLASS_NAME, "rc-imageselect-instructions")))
+                    driver.switch_to.default_content()
+                    print("Refreshed challenge is present and stable. Continuing.")
+                    continue
+                except Exception:
+                    driver.switch_to.default_content()
+                    if recaptcha_checkbox_verified(timeout=4):
+                        print("Main reCAPTCHA checkbox became verified during refresh wait.")
+                        break
+                    print("Refreshed challenge did not stabilize in time.")
+
+            driver.switch_to.default_content()
+            time.sleep(2)
+
+            if recaptcha_checkbox_verified(timeout=4):
+                print("Main reCAPTCHA checkbox is verified after challenge step.")
+                break
+        else:
+            # This 'else' belongs to the 'for' loop. Runs if the loop completes without a 'break'.
+            print("Image challenge still present after max attempts.")
+            return 0
+
+        # --- Submit main page form ---
+        if not recaptcha_checkbox_verified(timeout=10):
+            raise Exception('reCAPTCHA checkbox not verified in main frame')
+        check_button = WebDriverWait(driver, 10).until(
+            EC.element_to_be_clickable((By.CSS_SELECTOR, "button[data-action='demo_action']"))
+        )
+        driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", check_button)
+        time.sleep(0.2)
+        check_button.click()
+
+        # Check for the success message using the correct class name
+        WebDriverWait(driver, 10).until(
+            EC.presence_of_element_located((By.CLASS_NAME, "_successMessage_1ndnh_1"))
+        )
+
+        print("reCAPTCHA v2 passed successfully!")
+        
+        final_success_path = f"screenshots/final_success_recaptcha_v2_{datetime.now().strftime('%H%M%S')}.png"
+        driver.save_screenshot(final_success_path)
+        screenshot_paths.append(final_success_path)
+        
+        create_success_gif(screenshot_paths, output_folder=f"successful_solves/recaptcha_v2_{provider}")
+        return 1
+    
+    except Exception as ex:
+        print(f"An error occurred during reCAPTCHA v2 test: {ex}. Marking as failed.")
+        traceback.print_exc()
+        try:
+            driver.switch_to.default_content()
+        except Exception:
+            pass
+        return 0

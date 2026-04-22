@@ -181,3 +181,15 @@ CUSTOM_LMM_BASE_URL=http://127.0.0.1:PORT/your-endpoint
 CUSTOM_LMM_API_KEY=
 CUSTOM_LMM_MODEL=gpt-5.4
 ```
+
+## Internal token-harvest lane
+
+This workspace also contains a separate internal module for reCAPTCHA v3 style token harvesting:
+- `token_harvest/recaptchav3.js`
+- `token_harvest/server.js`
+
+Purpose:
+- input: `url + siteKey + action`
+- output: token
+
+This is intentionally separate from the visual reCAPTCHA v2 lane.

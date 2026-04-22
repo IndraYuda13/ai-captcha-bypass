@@ -1,0 +1,14 @@
+{
+  "name": "private-captcha-token-harvest",
+  "version": "0.1.0",
+  "private": true,
+  "main": "server.js",
+  "license": "UNLICENSED",
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.21.2",
+    "puppeteer-extra": "^3.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2",
+    "puppeteer-real-browser": "^1.4.4"
+  }
+}

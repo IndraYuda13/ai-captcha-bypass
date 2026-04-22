@@ -116,7 +116,8 @@ class GeminiCliBackend(ProviderBackend):
         cmd = [self.command]
         if model:
             cmd += ['--model', model]
-        cmd += ['-p', prompt, image_path]
+        merged_prompt = f"{prompt}\n\nUse the local file at path: {image_path}\nAnalyze that image file directly from the workspace. Your final answer must contain only the required result, with no preamble, no explanation, and no markdown."
+        cmd += ['-p', merged_prompt]
         return _run_cli(cmd)
 
     def generate_text(self, prompt: str, model: Optional[str] = None) -> str:
@@ -130,7 +131,8 @@ class GeminiCliBackend(ProviderBackend):
         cmd = [self.command]
         if model:
             cmd += ['--model', model]
-        cmd += ['-p', prompt, audio_path]
+        merged_prompt = f"{prompt}\n\nUse the local audio file at path: {audio_path}\nRead/transcribe that file directly from the workspace. Your final answer must contain only the required result, with no preamble, no explanation, and no markdown."
+        cmd += ['-p', merged_prompt]
         return _run_cli(cmd)
 
 
@@ -165,44 +167,103 @@ class CustomRelayBackend(ProviderBackend):
         self.base_url = os.getenv('CUSTOM_LMM_BASE_URL', '').rstrip('/')
         self.api_key = os.getenv('CUSTOM_LMM_API_KEY', '')
         self.default_model = os.getenv('CUSTOM_LMM_MODEL', 'gpt-5.4')
+        self.endpoint = os.getenv('CUSTOM_LMM_ENDPOINT', '/v1/chat/completions')
         if not self.base_url:
             raise ValueError('CUSTOM_LMM_BASE_URL is required for provider=custom')
 
-    def _post(self, payload: dict) -> str:
+    def _headers(self) -> dict:
         headers = {'Content-Type': 'application/json'}
         if self.api_key:
             headers['Authorization'] = f'Bearer {self.api_key}'
-        response = requests.post(self.base_url, headers=headers, json=payload, timeout=180)
-        response.raise_for_status()
-        data = response.json()
+        return headers
+
+    def _extract_text(self, data):
         if isinstance(data, dict):
+            choices = data.get('choices')
+            if isinstance(choices, list) and choices:
+                msg = choices[0].get('message') or {}
+                content = msg.get('content')
+                if isinstance(content, str):
+                    return content.strip()
+            output = data.get('output')
+            if isinstance(output, list):
+                parts = []
+                for item in output:
+                    if not isinstance(item, dict):
+                        continue
+                    for content_item in item.get('content') or []:
+                        if isinstance(content_item, dict) and isinstance(content_item.get('text'), str):
+                            parts.append(content_item['text'])
+                if parts:
+                    return '\n'.join(parts).strip()
             for key in ('output_text', 'text', 'content', 'response'):
                 if isinstance(data.get(key), str):
                     return data[key].strip()
         return json.dumps(data)
 
-    def generate_text_from_image(self, prompt: str, image_path: str, model: Optional[str] = None) -> str:
-        return self._post({
+    def _post_messages(self, messages: list, model: Optional[str] = None) -> str:
+        url = f"{self.base_url}{self.endpoint}"
+        payload = {
             'model': model or self.default_model,
-            'prompt': prompt,
-            'image_path': image_path,
-            'mode': 'vision'
-        })
+            'messages': messages,
+            'stream': False,
+        }
+        response = requests.post(url, headers=self._headers(), json=payload, timeout=180)
+        response.raise_for_status()
+        return self._extract_text(response.json())
+
+    def generate_text_from_image(self, prompt: str, image_path: str, model: Optional[str] = None) -> str:
+        base64_image = _image_to_base64(image_path)
+        messages = [{
+            'role': 'user',
+            'content': [
+                {'type': 'text', 'text': prompt},
+                {'type': 'image_url', 'image_url': {'url': f'data:image/png;base64,{base64_image}'}}
+            ]
+        }]
+        return self._post_messages(messages, model)
 
     def generate_text(self, prompt: str, model: Optional[str] = None) -> str:
-        return self._post({
-            'model': model or self.default_model,
-            'prompt': prompt,
-            'mode': 'text'
-        })
+        messages = [{'role': 'user', 'content': prompt}]
+        return self._post_messages(messages, model)
 
     def transcribe_audio(self, prompt: str, audio_path: str, model: Optional[str] = None) -> str:
-        return self._post({
-            'model': model or self.default_model,
-            'prompt': prompt,
-            'audio_path': audio_path,
-            'mode': 'audio'
-        })
+        audio_b64 = base64.b64encode(Path(audio_path).read_bytes()).decode('utf-8')
+        messages = [{
+            'role': 'user',
+            'content': [
+                {'type': 'text', 'text': prompt},
+                {'type': 'text', 'text': f'[audio base64 omitted length={len(audio_b64)}]'}
+            ]
+        }]
+        return self._post_messages(messages, model)
+
+
+class VisionAiLocalBackend(ProviderBackend):
+    def generate_text_from_image(self, prompt: str, image_path: str, model: Optional[str] = None) -> str:
+        from visionai_local import visionai_contains_object, visionai_extract_instruction_object
+
+        lowered = (prompt or '').lower()
+        if 'read the blue instruction bar' in lowered:
+            raise ValueError('visionai-local backend does not support instruction OCR from screenshot banners yet')
+
+        if 'does this image contain' in lowered:
+            import re
+            match = re.search(r"contain\s+'([^']+)'", prompt)
+            if not match:
+                match = re.search(r'contain\s+"([^"]+)"', prompt)
+            if not match:
+                return 'false'
+            object_name = match.group(1)
+            return 'true' if visionai_contains_object(image_path, object_name) else 'false'
+
+        raise ValueError('visionai-local backend only supports recaptcha instruction extraction and tile true/false image checks in this adapter path')
+
+    def generate_text(self, prompt: str, model: Optional[str] = None) -> str:
+        raise ValueError('visionai-local backend does not support plain text generation')
+
+    def transcribe_audio(self, prompt: str, audio_path: str, model: Optional[str] = None) -> str:
+        raise ValueError('visionai-local backend does not support audio transcription')
 
 
 def get_backend(provider: str) -> ProviderBackend:
@@ -217,4 +278,6 @@ def get_backend(provider: str) -> ProviderBackend:
         return CodexCliBackend()
     if provider == 'custom':
         return CustomRelayBackend()
+    if provider == 'visionai-local':
+        return VisionAiLocalBackend()
     raise ValueError(f'Unsupported provider: {provider}')

@@ -350,26 +350,55 @@ def ask_if_tile_contains_object_gemini(image_path, object_name, model=None):
 
 
 # --- Fork provider router helpers ---
+def _extract_last_alnum_token(text: str) -> str:
+    tokens = re.findall(r'[A-Za-z0-9]+', text or '')
+    return tokens[-1] if tokens else ''
+
+def _extract_last_true_false(text: str) -> str:
+    matches = re.findall(r'\b(true|false)\b', (text or '').lower())
+    return matches[-1] if matches else ''
+
+def _extract_last_integer(text: str) -> str:
+    matches = re.findall(r'-?\d+', text or '')
+    return matches[-1] if matches else ''
+
+def _extract_object_name(text: str) -> str:
+    lowered = (text or '').strip().lower()
+    if not lowered:
+        return ''
+    if 'skip' in lowered:
+        return 'skip'
+    lines = [line.strip() for line in lowered.splitlines() if line.strip()]
+    candidate = lines[-1] if lines else lowered
+    words = re.findall(r'[a-z0-9]+', candidate)
+    return words[-1] if words else candidate.strip()
+
 def ask_text_with_provider(image_path, provider='openai', model=None):
-    prompt = "Act as a blind person assistant. Read the text from the image and give me only the text answer. Give the only text from the image. If there is no text, give me empty string."
-    return get_backend(provider).generate_text_from_image(prompt, image_path, model).strip()
+    prompt = "Return ONLY the captcha text. No explanation. No extra words. No punctuation. If unreadable, return empty string."
+    raw = get_backend(provider).generate_text_from_image(prompt, image_path, model).strip()
+    return _extract_last_alnum_token(raw)
 
 def ask_audio_with_provider(audio_path, provider='openai', model=None):
-    prompt = "The audio is in American English. Type only the letters you hear clearly and loudly spoken. Ignore any background words, sounds, or faint speech. Enter the letters in the exact order they are spoken."
-    return get_backend(provider).transcribe_audio(prompt, audio_path, model).strip()
+    prompt = "Return ONLY the captcha transcription as plain letters or numbers. No explanation. No extra words."
+    raw = get_backend(provider).transcribe_audio(prompt, audio_path, model).strip()
+    return _extract_last_alnum_token(raw)
 
 def ask_recaptcha_instructions_with_provider(image_path, provider='openai', model=None):
-    prompt = "Analyze the blue instruction bar in the image. Identify the primary object the user is asked to select. For example, if it says Select all squares with motorcycles, the object is motorcycles. Respond with only the single object name in lowercase. If the instruction is to click skip, return skip."
-    return get_backend(provider).generate_text_from_image(prompt, image_path, model).strip().lower()
+    prompt = "Read the blue instruction bar. Return ONLY the single target object word in lowercase, like cars, buses, motorcycles, bicycle, hydrants, crosswalks, stairs, bridges, traffic, chimneys, skip. No explanation."
+    raw = get_backend(provider).generate_text_from_image(prompt, image_path, model).strip()
+    return _extract_object_name(raw)
 
 def ask_if_tile_contains_object_with_provider(image_path, object_name, provider='openai', model=None):
-    prompt = f"Does this image clearly contain a {object_name!r} or a recognizable part of a {object_name!r}? Respond only with true if you are certain. If you are unsure or cannot tell confidently, respond only with false."
-    return get_backend(provider).generate_text_from_image(prompt, image_path, model).strip().lower()
+    prompt = f"Does this image contain {object_name!r} or a recognizable part of it? Return ONLY true or false. No explanation."
+    raw = get_backend(provider).generate_text_from_image(prompt, image_path, model).strip().lower()
+    return _extract_last_true_false(raw)
 
 def ask_puzzle_distance_with_provider(image_path, provider='openai', model=None):
-    prompt = "Analyze the image and determine the correct horizontal slider movement needed to solve the puzzle CAPTCHA. Return only the integer pixel distance to move right. If already aligned return 0. Cap at 260."
-    return get_backend(provider).generate_text_from_image(prompt, image_path, model).strip()
+    prompt = "Return ONLY the integer pixel distance to move right. If already aligned return 0. Cap at 260. No explanation."
+    raw = get_backend(provider).generate_text_from_image(prompt, image_path, model).strip()
+    return _extract_last_integer(raw)
 
 def ask_puzzle_correction_with_provider(image_path, provider='openai', model=None):
-    prompt = "Determine the final pixel adjustment required to perfectly align the puzzle piece into its slot. Positive means move right, negative means move left, 0 means already perfect. Output only the integer."
-    return get_backend(provider).generate_text_from_image(prompt, image_path, model).strip()
+    prompt = "Return ONLY the integer correction. Positive means move right, negative means move left, 0 means perfect. No explanation."
+    raw = get_backend(provider).generate_text_from_image(prompt, image_path, model).strip()
+    return _extract_last_integer(raw)

@@ -1,0 +1,68 @@
+# Private solver roadmap
+
+- [x] Seeded from `IndraYuda13/ai-captcha-bypass`
+- [x] Added provider abstraction layer
+- [x] Added Gemini CLI provider
+- [x] Added Codex CLI provider
+- [x] Added custom relay provider
+- [x] Upgraded custom relay provider toward OpenAI-style `/v1/chat/completions` API
+- [ ] Add exact codex-slot-relay runtime env preset
+- [ ] Smoke test relay backend against local codex-slot-relay candidate
+- [ ] Add project-facing wrapper script / API shim
+- [ ] Resume Coinadster with solver-backed reCAPTCHA lane
+- [x] Relay auth token confirmed: relay-dev-token
+- [x] Private solver venv + deps installed
+- [ ] Custom backend smoke test against codex-slot-relay
+- [x] Synced relay slots from current main codex slot store
+- [ ] Re-test custom backend after sync
+- [x] Gemini CLI backend smoke test passed (`pong`)
+- [x] Gemini CLI preset/example added
+- [ ] Resume Coinadster with gemini-cli-backed solver lane
+- [x] Switched benchmark harness from Firefox to Chrome for this environment
+- [ ] Re-run Gemini CLI benchmark on 2captcha demos after Chrome patch
+- [x] Gemini CLI wrapper contract fixed: no positional file args with --prompt
+- [ ] Re-run benchmarks after Gemini CLI contract fix
+- [x] Patched reCAPTCHA grid handling: refetch + scroll + JS click fallback
+- [ ] Re-run reCAPTCHA v2 benchmark after interaction patch
+- [x] Added main-frame checkbox verified oracle for reCAPTCHA
+- [ ] Re-run reCAPTCHA benchmark after oracle patch
+- [x] Added iframe/instruction recapture stabilization for refreshed reCAPTCHA rounds
+- [ ] Re-run reCAPTCHA after refresh-stability patch
+- [x] Switched reCAPTCHA tile capture to full-grid screenshot + local crop
+- [ ] Re-run recaptcha_v2 after full-grid crop patch
+- [x] Added separate token-harvest lane for reCAPTCHA v3
+- [x] Kept v2 visual lane separate from v3 token lane
+- [ ] recaptcha_v3 token-harvest dependencies installed
+- [ ] recaptcha_v3 local server validated
+- [ ] continue hardening recaptcha_v2 toward API-like output
+- [ ] recaptcha_v3 token-harvest npm deps installed with valid package versions
+- [x] Added structured trace lines for recaptcha_v2 rounds
+- [ ] Re-run recaptcha_v2 with improved trace visibility
+- [x] Added post-verify refresh settle wait and iframe re-acquire
+- [ ] Re-run recaptcha_v2 after refresh-sync patch
+- [x] Defined proper HTTP contract draft for recaptcha_v2
+- [ ] Refactor v2 harness into API-callable engine
+- [ ] Add POST /recaptchav2 endpoint
+- [x] Wrote explicit recaptchav2 HTTP refactor plan
+- [ ] Extract recaptchav2 engine module from main.py
+- [ ] Add POST /recaptchav2 route
+- [x] recaptchav2 engine source extracted from main.py
+- [x] recaptchav2_engine.py scaffold created
+- [x] defined structured result shell for recaptchav2 engine
+- [x] migrated a first working slice of the Selenium solve loop into the engine result contract
+- [ ] wire POST /recaptchav2 to the extracted engine
+- [ ] replace remaining CLI-only assumptions with endpoint-ready inputs
+- [x] Added draft POST /recaptchav2 route shape in server.js
+- [ ] Fix runtime bridge so Node server can invoke Python recaptchav2 engine correctly
+- [x] recaptchav2 bridge now uses solver venv python
+- [ ] re-test /recaptchav2 after venv runner fix
+- [x] Python-owned recaptchav2 server created
+- [x] recaptchav2 HTTP endpoint live-tested via Python service
+- [x] stabilize instruction-provider lane for recaptchav2 service context via DOM-first target extraction
+- [x] Added ActionChains + refetch + retry ladder for v2 tile clicks
+- [x] Re-test /recaptchav2 after click hardening
+- [x] Re-test /recaptchav2 with correct instruction-provider output
+- [x] Implement VisionAI-style dynamic refresh loop structure (URL change tracking + changed-cell recomposite)
+- [x] Prove dynamic 3x3 downstream behavior on a real refreshed 3x3 challenge
+- [x] Add first 4x4 over-selection guard in visionai-local wrapper
+- [ ] Tune 4x4 detection over-selection against VisionAI behavior
