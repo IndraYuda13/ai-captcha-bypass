@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 import json
 import os
+import shutil
 import sys
+import tempfile
 import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from datetime import datetime
@@ -53,9 +55,11 @@ def make_driver():
     chrome_options.add_argument('--js-flags=--max-old-space-size=256')
     chrome_options.add_argument('--remote-debugging-pipe')
     chrome_options.add_argument('--window-size=1366,768')
-    chrome_options.add_argument('--user-data-dir=/tmp/recaptchav2-chrome-profile')
+    profile_dir = tempfile.mkdtemp(prefix='recaptchav2-chrome-', dir='/tmp')
+    chrome_options.add_argument(f'--user-data-dir={profile_dir}')
     chrome_options.binary_location = os.getenv('CHROME_BINARY', '/usr/bin/google-chrome')
-    return webdriver.Chrome(options=chrome_options)
+    driver = webdriver.Chrome(options=chrome_options)
+    return driver, profile_dir
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -99,8 +103,9 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         driver = None
+        profile_dir = None
         try:
-            driver = make_driver()
+            driver, profile_dir = make_driver()
             provider = payload.get('provider') or 'gemini-cli'
             model = payload.get('model')
             instruction_provider = payload.get('instructionProvider') or provider
@@ -141,6 +146,11 @@ class Handler(BaseHTTPRequestHandler):
             if driver is not None:
                 try:
                     driver.quit()
+                except Exception:
+                    pass
+            if profile_dir:
+                try:
+                    shutil.rmtree(profile_dir, ignore_errors=True)
                 except Exception:
                     pass
 

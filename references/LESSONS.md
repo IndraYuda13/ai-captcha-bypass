@@ -72,6 +72,31 @@ Reusable lessons for our solver:
 - for dynamic 3x3 proof, repeated 3x3 rounds with changing selected tiles are a meaningful downstream oracle.
 - 4x4 tuning should stay minimal and wrapper-level first, so the architecture remains close to the reference while runtime-specific over-selection is softened.
 
+## 2026-04-23 - narrowed blocker after 3x3 completion patch
+
+Key takeaways:
+- the recent completion patch fixed a real comparison bug, but live runs still did not reach verified/token.
+- the remaining blocker is narrower than before: the engine still cannot reliably tell when a dynamic 3x3 refresh wave is actually finished.
+- URL-diff alone is not a sufficient refresh completion oracle in this lane. The board can remain open and dynamic without our current checks concluding that it is ready for final verify.
+- the next likely useful oracle should come from richer post-click state evidence, such as tile DOM state changes, verify-button transitions, or short-window screenshot/hash comparisons on the clicked cells.
+
+Reusable lessons for our solver:
+- separate `reference snapshot for refresh comparison` from `current round snapshot`; overwriting the reference too early silently kills post-click logic.
+- when URL-level evidence keeps failing, escalate to a stronger visual or DOM settle oracle instead of stretching the same weak signal further.
+
+## 2026-04-23 - reference-aligned verify-settle oracle validated live
+
+Key takeaways:
+- after tracing the DannyLuna reference deeper, the real completion oracle was confirmed: always click verify, then wait on verify-button disabled/enabled processing state before judging solved vs unsolved.
+- this oracle was ported into our Selenium engine and then validated live after clearing a separate browser-start blocker.
+- the live trace changed accordingly, proving the new path is active, for example: `challenge still open after verify settle wait, continue next round`.
+- a separate ops blocker also surfaced and was fixed: Chrome startup instability after restart came from reusing a fixed `--user-data-dir`. Switching to a fresh temporary Chrome profile per request restored stable startup.
+- after these fixes, the remaining failures are no longer architecture confusion. The current misses are in live board interaction quality and occasional Selenium instability, not in the completion-oracle design itself.
+
+Reusable lessons for our solver:
+- when validating a new code path, trace-message changes are useful proof that the live server is actually executing the patched branch.
+- for long-lived local automation services, shared Chrome profiles are fragile after hard restarts; per-request temp profiles are safer.
+
 ## 2026-04-23 - recaptchav2 Python HTTP lane
 
 Key takeaways:

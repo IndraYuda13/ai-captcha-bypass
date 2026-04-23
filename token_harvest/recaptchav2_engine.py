@@ -129,6 +129,31 @@ def _extract_target_keyword_from_dom(driver) -> str:
     return ''
 
 
+def _is_verify_button_disabled(driver, timeout: int = 2) -> bool:
+    try:
+        _switch_to_challenge_frame(driver, timeout=timeout)
+        button = WebDriverWait(driver, timeout).until(EC.presence_of_element_located((By.ID, 'recaptcha-verify-button')))
+        disabled = button.get_attribute('disabled')
+        driver.switch_to.default_content()
+        return disabled is not None
+    except Exception:
+        driver.switch_to.default_content()
+        return False
+
+
+def _wait_for_verify_result(driver, timeout: float = 8.0) -> bool:
+    start = time.time()
+    time.sleep(0.1)
+    while time.time() - start < timeout:
+        if _checkbox_verified(driver, timeout=1):
+            return True
+        if not _is_verify_button_disabled(driver, timeout=1):
+            time.sleep(0.2)
+            return _checkbox_verified(driver, timeout=2)
+        time.sleep(0.1)
+    return _checkbox_verified(driver, timeout=2)
+
+
 def _challenge_still_open(driver) -> bool:
     try:
         _switch_to_challenge_frame(driver, timeout=3)
@@ -249,6 +274,7 @@ def solve_recaptcha_v2(
         num_last_clicks = 0
         non_matching_cache = set()
         previous_urls: List[str] = []
+        post_click_reference_urls: List[str] = []
         base_grid_img: Optional[Image.Image] = None
 
         for attempt in range(max_rounds):
@@ -257,6 +283,8 @@ def solve_recaptcha_v2(
             try:
                 _switch_to_challenge_frame(driver, timeout=5)
                 instruction_element, table = _wait_challenge_ready(driver, timeout=10)
+                time.sleep(0.35)
+                live_before_urls = _get_challenge_image_urls(driver)
             except Exception:
                 append_trace(result, round=round_no, note='no challenge iframe found, moving to final verification')
                 break
@@ -291,6 +319,12 @@ def solve_recaptcha_v2(
             time.sleep(0.5)
             all_tiles = WebDriverWait(driver, 10).until(lambda d: table.find_elements(By.TAG_NAME, 'td'))
             current_urls = _get_challenge_image_urls(driver)
+            if live_before_urls and current_urls and len(live_before_urls) == len(current_urls) and live_before_urls != current_urls:
+                append_trace(result, round=round_no, note='challenge image urls changed during capture window, recapturing stable state')
+                _switch_to_challenge_frame(driver, timeout=5)
+                instruction_element, table = _wait_challenge_ready(driver, timeout=10)
+                time.sleep(0.35)
+                current_urls = _get_challenge_image_urls(driver)
             grid_path = f'{screenshots_dir}/recaptcha_grid_{round_no}.png'
             table.screenshot(grid_path)
             result.artifacts.append(grid_path)
@@ -379,7 +413,7 @@ def solve_recaptcha_v2(
                 new_clicks=len(new_tiles_to_click),
                 selected_tiles=sorted(list(current_attempt_tiles)),
                 checkbox_verified=False,
-                note='round analyzed'
+                note=f'round analyzed urls={len(current_urls)}'
             )
 
             for i in sorted(list(new_tiles_to_click)):
@@ -395,6 +429,12 @@ def solve_recaptcha_v2(
                         tile = all_tiles[i]
                         driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", tile)
                         time.sleep(0.15)
+                        live_table = _wait_challenge_ready(driver, timeout=5)[1]
+                        fresh_tiles = live_table.find_elements(By.TAG_NAME, 'td')
+                        if i >= len(fresh_tiles):
+                            append_trace(result, round=round_no, note=f'tile index {i} missing after reacquire')
+                            break
+                        tile = fresh_tiles[i]
                         if tile.is_displayed() and tile.is_enabled():
                             driver.execute_script("arguments[0].scrollIntoView({block: 'center', inline: 'center'});", tile)
                             driver.execute_script("window.scrollBy(0, -120);")
@@ -410,8 +450,15 @@ def solve_recaptcha_v2(
                                     try:
                                         driver.execute_script("arguments[0].click();", tile)
                                     except Exception:
-                                        cell = tile.find_element(By.CSS_SELECTOR, '.rc-image-tile-target, .rc-imageselect-tile')
-                                        driver.execute_script("arguments[0].click();", cell)
+                                        try:
+                                            target = tile.find_element(By.CSS_SELECTOR, '.rc-image-tile-target')
+                                            driver.execute_script("arguments[0].click();", target)
+                                        except Exception:
+                                            live_table = _wait_challenge_ready(driver, timeout=5)[1]
+                                            retry_tiles = live_table.find_elements(By.TAG_NAME, 'td')
+                                            if i < len(retry_tiles):
+                                                retry_tile = retry_tiles[i]
+                                                driver.execute_script("arguments[0].click();", retry_tile)
                             clicked = True
                             time.sleep(random.uniform(0.25, 0.6))
                             driver.switch_to.default_content()
@@ -424,7 +471,7 @@ def solve_recaptcha_v2(
                     append_trace(result, round=round_no, note=f'click failed on tile {i}')
 
             clicked_tile_indices.update(new_tiles_to_click)
-            previous_urls = current_urls or previous_urls
+            post_click_reference_urls = list(current_urls) if current_urls else list(previous_urls)
 
             driver.switch_to.default_content()
             time.sleep(1.25)
@@ -438,10 +485,7 @@ def solve_recaptcha_v2(
                 return result.to_dict()
 
             challenge_open = _challenge_still_open(driver)
-            should_try_verify = True
-            if tile_count == 9 and len(new_tiles_to_click) > 0:
-                should_try_verify = False
-                append_trace(result, round=round_no, note='3x3 dynamic board, wait for refresh before verify')
+            should_try_verify = challenge_open
 
             if challenge_open and should_try_verify:
                 try:
@@ -454,7 +498,15 @@ def solve_recaptcha_v2(
                     except Exception:
                         driver.execute_script("arguments[0].click();", verify_button)
                     driver.switch_to.default_content()
-                    time.sleep(1.5)
+                    if _wait_for_verify_result(driver, timeout=8.0):
+                        result.verified = True
+                        result.token = _extract_token(driver)
+                        result.status = 'success'
+                        result.stage = 'verified'
+                        result.message = 'main checkbox verified after verify-button settle wait'
+                        append_trace(result, round=round_no, checkbox_verified=True, note='main checkbox verified after verify settle wait')
+                        return result.to_dict()
+                    time.sleep(0.4)
                 except Exception as verify_exc:
                     driver.switch_to.default_content()
                     append_trace(result, round=round_no, note=f'verify click not usable: {verify_exc}')
@@ -471,9 +523,11 @@ def solve_recaptcha_v2(
                 return result.to_dict()
 
             if _challenge_still_open(driver):
-                append_trace(result, round=round_no, note='challenge still open after verify path, continue next round')
+                append_trace(result, round=round_no, note='challenge still open after verify settle wait, continue next round')
+                previous_urls = current_urls or previous_urls
                 continue
 
+            previous_urls = current_urls or previous_urls
             append_trace(result, round=round_no, note='challenge disappeared without verified checkbox')
 
         result.stage = 'incomplete'
