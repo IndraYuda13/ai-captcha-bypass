@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 import logging
 import re
+import subprocess
 import sys
 from pathlib import Path
 from threading import Lock
@@ -82,67 +84,16 @@ def visionai_extract_instruction_object(image_path: str) -> str:
 
 
 def visionai_rank_grid_tiles(grid_path: str, object_name: str, grid_size: int) -> list[tuple[int, float]]:
-    detector = _get_detector()
-    image = cv2.imread(str(grid_path))
-    if image is None:
-        raise RuntimeError(f'failed to read grid image: {grid_path}')
-
-    if grid_size == 4:
-        target_class = detector.get_coco_target_class(object_name)
-        if target_class is not None:
-            answers = detector.detect_for_grid(
-                image,
-                target_class=target_class,
-                grid_size=450,
-                conf_threshold=max(detector.detection_conf_threshold, 0.72),
-            )
-            if answers:
-                rows = {}
-                cols = {}
-                for cell in answers:
-                    r = (cell - 1) // 4
-                    c = (cell - 1) % 4
-                    rows[r] = rows.get(r, 0) + 1
-                    cols[c] = cols.get(c, 0) + 1
-
-                dense = []
-                edge = []
-                for cell in answers:
-                    r = (cell - 1) // 4
-                    c = (cell - 1) % 4
-                    score = rows.get(r, 0) + cols.get(c, 0)
-                    if score >= 4:
-                        dense.append(cell)
-                    else:
-                        edge.append(cell)
-
-                def is_adjacent(a, b):
-                    ar, ac = (a - 1) // 4, (a - 1) % 4
-                    br, bc = (b - 1) // 4, (b - 1) % 4
-                    return abs(ar - br) <= 1 and abs(ac - bc) <= 1
-
-                if dense:
-                    answers = sorted(set(dense))
-                    for cand in edge:
-                        if any(is_adjacent(cand, keep) for keep in answers):
-                            r = (cand - 1) // 4
-                            c = (cand - 1) % 4
-                            if rows.get(r, 0) >= 1 and cols.get(c, 0) >= 1:
-                                answers.append(cand)
-                    answers = sorted(set(answers))
-
-                if len(answers) > 8:
-                    answers = [cell for cell in answers if rows.get((cell - 1) // 4, 0) >= 2]
-                    answers = sorted(set(answers))
-            return [(cell, 1.0 if cell in answers else 0.0) for cell in range(1, 17)]
-
-        target_class = detector.get_target_class(object_name)
-        if target_class is None:
-            raise RuntimeError(f'no classification mapping for target: {object_name}')
-        ranked = detector.classify_tiles_with_confidence(image, grid_size=4, target_class=target_class)
-        return ranked
-
-    target_class = detector.get_target_class(object_name)
-    if target_class is None:
-        raise RuntimeError(f'no classification target mapping for target: {object_name}')
-    return detector.classify_tiles_with_confidence(image, grid_size=grid_size, target_class=target_class)
+    runner = Path('/root/.openclaw/workspace/projects/private-captcha-solver/tmp_visionai_rank_runner.py')
+    cmd = [
+        str(VISION_REPO / '.venv/bin/python'),
+        str(runner),
+        str(grid_path),
+        str(object_name),
+        str(grid_size),
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+    payload = json.loads((result.stdout or '').strip())
+    if not payload.get('ok'):
+        raise RuntimeError(payload.get('error') or 'visionai rank runner failed')
+    return [(int(cell), float(score)) for cell, score in payload['ranked']]

@@ -1,5 +1,16 @@
 # Private solver roadmap
 
+## Top-level parity checklist
+
+- [in progress] Replace hybrid app-first structure with VisionAI-style package-first architecture
+- [pending] Migrate browser/runtime from raw Selenium lane toward replicator-driven solver flow
+- [pending] Split challenge logic into dedicated handlers matching reference structure
+- [pending] Introduce formal solver config, typed result objects, and stable public API
+- [pending] Add CLI and async entrypoints matching reference behavior
+- [pending] Verify parity with reference on v2 dynamic, selection, 4x4, and token extraction flow
+
+## Legacy / detailed checklist
+
 - [x] Seeded from `IndraYuda13/ai-captcha-bypass`
 - [x] Added provider abstraction layer
 - [x] Added Gemini CLI provider
@@ -66,3 +77,15 @@
 - [x] Prove dynamic 3x3 downstream behavior on a real refreshed 3x3 challenge
 - [x] Add first 4x4 over-selection guard in visionai-local wrapper
 - [ ] Tune 4x4 detection over-selection against VisionAI behavior
+
+## Parity refactor execution order
+
+- [in progress] Audit exact component map versus `DannyLuna17/VisionAIRecaptchaSolver`
+- [pending] Create local package skeleton under `src/vision_ai_recaptcha_solver/`
+- [pending] Extract config, types, and exceptions from ad-hoc runtime code
+- [pending] Extract browser navigation helpers into dedicated module
+- [pending] Move 3x3 selection, 3x3 dynamic, and 4x4 logic into separate handlers
+- [pending] Build synchronous solver class around the extracted components
+- [pending] Decide whether to embed or wrap `recaptcha-domain-replicator` as the browser entry boundary
+- [pending] Add async solver and CLI only after sync solver shape is stable
+- [pending] Re-run live verification and score current parity honestly
