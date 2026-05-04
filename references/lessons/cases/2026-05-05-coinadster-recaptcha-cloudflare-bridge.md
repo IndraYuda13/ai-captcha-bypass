@@ -30,3 +30,10 @@ Date: 2026-05-05
 ## Next best action
 
 - Apply the minimal cookie/user-agent preseed patch, extend the Coinadster solver caller to forward the cleared bundle, then live-test oracle: debug HTML must show Coinadster page/reCAPTCHA iframe, not Cloudflare `Just a moment...`.
+
+
+## Follow-up findings
+
+- Coinadster renders the login reCAPTCHA inside hidden modal `#slogi22Mo2dal`; open the modal before clicking the checkbox.
+- For `gemini-cli-grid`, full-grid ranking was more reliable than the secondary per-tile confirmation pass on dynamic grids. Trusting ranked top-level selections produced a real verified token in the Coinadster flow.
+- A valid reCAPTCHA token alone is not enough: Coinadster can still reject login with `Session expired` if the hidden page token/PHP session state no longer matches.

@@ -290,6 +290,10 @@ class RecaptchaSolver:
             adapter = self._get_adapter(driver)
             page_url = kwargs.get('page_url') or kwargs.get('pageUrl') or 'https://2captcha.com/demo/recaptcha-v2'
             adapter.open(driver, page_url)
+            pre_javascript = kwargs.get('preJavaScript') or kwargs.get('pre_javascript')
+            if pre_javascript:
+                driver.execute_script(pre_javascript)
+                time.sleep(float(kwargs.get('preJavaScriptWait') or kwargs.get('pre_javascript_wait') or 1.0))
             result.stage = 'bootstrap_checkbox'
             adapter.click_checkbox(driver, timeout=10)
             time.sleep(2)

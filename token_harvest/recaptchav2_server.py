@@ -247,6 +247,8 @@ class Handler(BaseHTTPRequestHandler):
                 rank_grid_tiles=rank_grid_tiles,
                 debug=debug,
                 page_url=page_url,
+                preJavaScript=payload.get('preJavaScript') or payload.get('pre_javascript'),
+                preJavaScriptWait=payload.get('preJavaScriptWait') or payload.get('pre_javascript_wait'),
             )
             result['requestId'] = request_id
             result['pageUrl'] = page_url
@@ -254,6 +256,10 @@ class Handler(BaseHTTPRequestHandler):
             result['cookiePreseedCount'] = cookie_count
             result['userAgentPreseeded'] = bool(user_agent)
             result['time'] = now_iso()
+            try:
+                Path(screenshots_dir, 'result.json').write_text(json.dumps(result, indent=2), encoding='utf-8')
+            except Exception:
+                pass
             self._send(200, result)
         except Exception as exc:
             self._send(500, {

@@ -112,18 +112,21 @@ class DynamicCaptchaHandler(BaseCaptchaHandler):
                     append_trace(result, round=round_no, note='dynamic top-level fallback used')
 
                 if selected_tiles:
-                    confirmed_tiles = confirm_tiles(selected_tiles)
-                    if confirmed_tiles:
-                        selected_tiles = confirmed_tiles
-                        append_trace(result, round=round_no, note=f'dynamic confirmed top-level tiles={selected_tiles}')
+                    if provider == 'gemini-cli-grid':
+                        append_trace(result, round=round_no, note=f'dynamic trusted grid-ranked top-level tiles={selected_tiles}')
                     else:
-                        high_conf_candidates = [idx for idx, conf in sorted(ranked_map.items(), key=lambda x: x[1], reverse=True) if conf >= 0.7]
-                        if high_conf_candidates:
-                            selected_tiles = high_conf_candidates[:1]
-                            append_trace(result, round=round_no, note=f'dynamic fallback kept top high-conf tile={selected_tiles}')
+                        confirmed_tiles = confirm_tiles(selected_tiles)
+                        if confirmed_tiles:
+                            selected_tiles = confirmed_tiles
+                            append_trace(result, round=round_no, note=f'dynamic confirmed top-level tiles={selected_tiles}')
                         else:
-                            selected_tiles = []
-                            append_trace(result, round=round_no, note='dynamic confirmation rejected all top-level tiles')
+                            high_conf_candidates = [idx for idx, conf in sorted(ranked_map.items(), key=lambda x: x[1], reverse=True) if conf >= 0.7]
+                            if high_conf_candidates:
+                                selected_tiles = high_conf_candidates[:1]
+                                append_trace(result, round=round_no, note=f'dynamic fallback kept top high-conf tile={selected_tiles}')
+                            else:
+                                selected_tiles = []
+                                append_trace(result, round=round_no, note='dynamic confirmation rejected all top-level tiles')
                 next_base_grid = grid_img.copy()
                 for cell_num, _ in ranked_sorted:
                     if (cell_num - 1) not in selected_tiles:
