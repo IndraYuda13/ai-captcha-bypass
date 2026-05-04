@@ -33,6 +33,9 @@ def create_selenium_session() -> BrowserSession:
     chrome_options.add_argument('--remote-debugging-pipe')
     chrome_options.add_argument(f'--user-data-dir={chrome_profile_dir}')
     chrome_options.add_argument('--window-size=1366,768')
+    warp_proxy = os.getenv('WARP_PROXY') or os.getenv('HTTP_PROXY_FOR_BROWSER')
+    if warp_proxy:
+        chrome_options.add_argument(f'--proxy-server={warp_proxy}')
     chrome_options.binary_location = os.getenv('CHROME_BINARY', '/usr/bin/google-chrome')
     driver = webdriver.Chrome(options=chrome_options)
     session = BrowserSession(mode='selenium', browser=driver)

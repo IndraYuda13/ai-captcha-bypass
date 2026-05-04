@@ -42,7 +42,7 @@ class SelectionCaptchaHandler(BaseCaptchaHandler):
         selected_tiles: list[int] = []
         append_trace(result, round=round_no, note=f'selection entry provider={provider} cols={cols} tiles={tile_count} visionai_fn={visionai_rank_grid_tiles is not None}')
 
-        if provider == 'visionai-local' and visionai_rank_grid_tiles is not None:
+        if provider in ('visionai-local', 'gemini-cli-grid') and visionai_rank_grid_tiles is not None:
             raw_ranked = visionai_rank_grid_tiles(grid_path, object_name, cols)
             append_trace(result, round=round_no, note=f'visionai raw ranked={raw_ranked}')
             ranked = sorted(raw_ranked, key=lambda x: x[1], reverse=True)

@@ -24,6 +24,9 @@ class SolverConfig:
     min_confidence_threshold: float = 0.2
     fourth_cell_threshold: float = 0.7
     detection_conf_threshold: float = 0.6
+    square_max_confirmed_tiles: int = 4
+    square_overselect_guard_threshold: int = 6
+    square_medium_confidence_threshold: float = 0.5
     default_timeout: float = 10.0
     image_download_retries: int = 3
     image_download_retry_delay: float = 1.0
@@ -45,6 +48,11 @@ class SolverConfig:
             self.min_confidence_threshold,
             self.fourth_cell_threshold,
             self.detection_conf_threshold,
+            self.square_medium_confidence_threshold,
         ):
             if not 0.0 <= value <= 1.0:
                 raise ValueError('confidence thresholds must be between 0.0 and 1.0')
+        if self.square_max_confirmed_tiles < 1:
+            raise ValueError('square_max_confirmed_tiles must be at least 1')
+        if self.square_overselect_guard_threshold < 1:
+            raise ValueError('square_overselect_guard_threshold must be at least 1')

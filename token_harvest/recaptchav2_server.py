@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 import json
 import os
+import re
 import shutil
+import subprocess
 import sys
 import tempfile
 import traceback
@@ -12,6 +14,9 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
+SRC_ROOT = PROJECT_ROOT / 'src'
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
 if str(Path(__file__).resolve().parent) not in sys.path:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -28,13 +33,15 @@ HOST = os.getenv('RECAPTCHAV2_HOST', '127.0.0.1')
 PORT = int(os.getenv('RECAPTCHAV2_PORT', '7862'))
 DEBUG_DIR = Path(os.getenv('RECAPTCHAV2_DEBUG_DIR', Path(__file__).with_name('debug_v2')))
 DEBUG_DIR.mkdir(parents=True, exist_ok=True)
+DEFAULT_PROXY = os.getenv('RECAPTCHAV2_PROXY', '').strip()
+GEMINI_COMMAND = os.getenv('GEMINI_CLI_COMMAND', 'gemini')
 
 
 def now_iso():
     return datetime.utcnow().isoformat() + 'Z'
 
 
-def make_driver():
+def build_chrome_options(proxy=None):
     chrome_options = webdriver.ChromeOptions()
     chrome_options.add_argument('--headless=new')
     chrome_options.add_argument('--no-sandbox')
@@ -55,9 +62,69 @@ def make_driver():
     chrome_options.add_argument('--js-flags=--max-old-space-size=256')
     chrome_options.add_argument('--remote-debugging-pipe')
     chrome_options.add_argument('--window-size=1366,768')
+    selected_proxy = (proxy if proxy is not None else os.getenv('RECAPTCHAV2_PROXY', '')).strip()
+    if selected_proxy:
+        chrome_options.add_argument(f'--proxy-server={selected_proxy}')
     profile_dir = tempfile.mkdtemp(prefix='recaptchav2-chrome-', dir='/tmp')
     chrome_options.add_argument(f'--user-data-dir={profile_dir}')
     chrome_options.binary_location = os.getenv('CHROME_BINARY', '/usr/bin/google-chrome')
+    return chrome_options, profile_dir
+
+
+def parse_tile_indices(text, cols=3):
+    text = (text or '').strip()
+    try:
+        payload = json.loads(text)
+        if isinstance(payload, dict):
+            payload = payload.get('tiles') or payload.get('indices') or payload.get('answers') or []
+        if isinstance(payload, list):
+            values = [int(x) for x in payload]
+        else:
+            values = []
+    except Exception:
+        values = [int(x) for x in re.findall(r'\b(?:[1-9]|1[0-6])\b', text)]
+    max_cell = 16 if int(cols) == 4 else 9
+    deduped = []
+    for value in values:
+        if 1 <= value <= max_cell and value not in deduped:
+            deduped.append(value)
+    return deduped
+
+
+def rank_grid_tiles_with_gemini(grid_path, object_name, cols):
+    max_cell = 16 if int(cols) == 4 else 9
+    prompt = (
+        f"Analyze the CAPTCHA grid image at this local file path: {grid_path}\n"
+        f"The grid has {cols} columns and cells numbered left-to-right, top-to-bottom from 1 to {max_cell}.\n"
+        f"Return ONLY a JSON array of cell numbers that contain '{object_name}' or a recognizable part of it.\n"
+        "If none match, return []. No markdown. No explanation."
+    )
+    try:
+        proc = subprocess.run(
+            [GEMINI_COMMAND, '-p', prompt],
+            capture_output=True,
+            text=True,
+            timeout=int(os.getenv('RECAPTCHAV2_GEMINI_TIMEOUT', '180')),
+        )
+        if proc.returncode != 0:
+            selected = []
+        else:
+            selected = parse_tile_indices(proc.stdout, cols=cols)
+    except subprocess.TimeoutExpired:
+        selected = []
+    return [(cell, 1.0 if cell in selected else 0.0) for cell in range(1, max_cell + 1)]
+
+
+def select_proxy(payload):
+    if payload.get('noProxy') is True:
+        return ''
+    if 'proxy' in payload:
+        return payload.get('proxy') or None
+    return os.getenv('RECAPTCHAV2_PROXY', '').strip() or DEFAULT_PROXY or None
+
+
+def make_driver(proxy=None):
+    chrome_options, profile_dir = build_chrome_options(proxy=proxy)
     driver = webdriver.Chrome(options=chrome_options)
     return driver, profile_dir
 
@@ -105,7 +172,8 @@ class Handler(BaseHTTPRequestHandler):
         driver = None
         profile_dir = None
         try:
-            driver, profile_dir = make_driver()
+            proxy = select_proxy(payload)
+            driver, profile_dir = make_driver(proxy=proxy)
             provider = payload.get('provider') or 'gemini-cli'
             model = payload.get('model')
             instruction_provider = payload.get('instructionProvider') or provider
@@ -120,6 +188,8 @@ class Handler(BaseHTTPRequestHandler):
             def ask_instruction(image_path, _provider, _model):
                 return ask_recaptcha_instructions_with_provider(image_path, instruction_provider, instruction_model)
 
+            rank_grid_tiles = rank_grid_tiles_with_gemini if provider == 'gemini-cli-grid' else None
+
             result = solve_recaptcha_v2(
                 driver=driver,
                 provider=provider,
@@ -128,11 +198,13 @@ class Handler(BaseHTTPRequestHandler):
                 screenshots_dir=screenshots_dir,
                 ask_recaptcha_instructions_with_provider=ask_instruction,
                 check_tile_for_object=check_tile_for_object,
+                rank_grid_tiles=rank_grid_tiles,
                 debug=debug,
                 page_url=page_url,
             )
             result['requestId'] = request_id
             result['pageUrl'] = page_url
+            result['proxy'] = proxy or ''
             result['time'] = now_iso()
             self._send(200, result)
         except Exception as exc:

@@ -352,6 +352,9 @@ def recaptcha_v2_test(driver, provider='openai', model=None):
     def read_instruction_text_from_dom(timeout=10):
         deadline = time.time() + timeout
         selectors = [
+            (By.CSS_SELECTOR, '.rc-imageselect-payload strong'),
+            (By.CSS_SELECTOR, '.rc-imageselect-desc strong'),
+            (By.CSS_SELECTOR, '.rc-imageselect-desc-no-canonical strong'),
             (By.CLASS_NAME, 'rc-imageselect-instructions'),
             (By.CSS_SELECTOR, '.rc-imageselect-desc-wrapper'),
             (By.CSS_SELECTOR, '.rc-imageselect-desc-no-canonical'),
@@ -390,13 +393,20 @@ def recaptcha_v2_test(driver, provider='openai', model=None):
         lowered = (text or '').strip().lower()
         if not lowered:
             return ''
-        lines = [line.strip() for line in lowered.splitlines() if line.strip()]
+        lines = [line.strip(' .,:;!') for line in lowered.splitlines() if line.strip()]
+        strong_candidates = [
+            line for line in lines
+            if line not in {'select all images with', 'click verify once there are none left'}
+            and len(line.split()) <= 4
+        ]
+        if strong_candidates:
+            return strong_candidates[-1]
         for idx, line in enumerate(lines):
             if line.startswith('select all images with') and idx + 1 < len(lines):
-                return lines[idx + 1]
+                return lines[idx + 1].strip(' .,:;!')
         if 'select all images with' in lowered:
             after = lowered.split('select all images with', 1)[1].strip()
-            first = after.splitlines()[0].strip() if after.splitlines() else after
+            first = after.splitlines()[0].strip(' .,:;!') if after.splitlines() else after.strip(' .,:;!')
             if first:
                 return first
         return ''
@@ -548,12 +558,30 @@ def recaptcha_v2_test(driver, provider='openai', model=None):
                     elif cols == 3:
                         ranked_sorted = sorted(ranked, key=lambda x: x[1], reverse=True)
                         top_three = ranked_sorted[:3]
-                        if any(conf < 0.2 for _, conf in top_three):
+                        if len(top_three) < 3 or any(conf < 0.2 for _, conf in top_three):
                             tiles_to_click_this_round = []
                         else:
-                            tiles_to_click_this_round = [cell - 1 for cell, _ in top_three]
+                            ranked_map = {cell - 1: conf for cell, conf in ranked_sorted}
+                            candidate_tiles = [cell - 1 for cell, _ in top_three]
                             if len(ranked_sorted) >= 4 and ranked_sorted[3][1] >= 0.7:
-                                tiles_to_click_this_round.append(ranked_sorted[3][0] - 1)
+                                candidate_tiles.append(ranked_sorted[3][0] - 1)
+                            fallback_candidates = sorted(
+                                [idx for idx, conf in ranked_map.items() if conf >= 0.7],
+                                key=lambda idx: ranked_map[idx],
+                                reverse=True,
+                            )
+                            tasks = [(i, path, object_name, provider, model) for i, path in enumerate(tile_paths)]
+                            with ThreadPoolExecutor(max_workers=len(all_tiles)) as executor:
+                                fallback_results = list(executor.map(check_tile_for_object, tasks))
+                            confirmed_tiles = sorted([tile_index for tile_index, should_click in fallback_results if should_click])
+                            if confirmed_tiles:
+                                tiles_to_click_this_round = [idx for idx in candidate_tiles if idx in confirmed_tiles]
+                                if not tiles_to_click_this_round:
+                                    tiles_to_click_this_round = [idx for idx in fallback_candidates if idx in confirmed_tiles]
+                                if not tiles_to_click_this_round:
+                                    tiles_to_click_this_round = confirmed_tiles[:max(1, min(3, len(confirmed_tiles)))]
+                            else:
+                                tiles_to_click_this_round = candidate_tiles
                     else:
                         positive_cells = [cell for cell, conf in ranked if conf >= 0.7]
                         if len(positive_cells) > 6:
@@ -722,6 +750,9 @@ def main():
         chrome_options.add_argument('--remote-debugging-pipe')
         chrome_options.add_argument(f'--user-data-dir={chrome_profile_dir}')
         chrome_options.add_argument('--window-size=1366,768')
+        warp_proxy = os.getenv('WARP_PROXY') or os.getenv('HTTP_PROXY_FOR_BROWSER')
+        if warp_proxy:
+            chrome_options.add_argument(f'--proxy-server={warp_proxy}')
         chrome_options.binary_location = os.getenv('CHROME_BINARY', '/usr/bin/google-chrome')
         driver = webdriver.Chrome(options=chrome_options)
 

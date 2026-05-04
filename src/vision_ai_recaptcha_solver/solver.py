@@ -104,7 +104,7 @@ class RecaptchaSolver:
             return button.attr('disabled') is not None
         except Exception:
             try:
-                driver.switch_to.default_content()
+                self._get_adapter(driver).reset_context(driver)
             except Exception:
                 pass
             return False
@@ -144,7 +144,7 @@ class RecaptchaSolver:
             return True
         except Exception:
             try:
-                driver.switch_to.default_content()
+                self._get_adapter(driver).reset_context(driver)
             except Exception:
                 pass
             return False
@@ -203,8 +203,9 @@ class RecaptchaSolver:
             return self.square_handler
         return self.selection_handler
 
-    def click_selected_tiles(self, driver: Any, selected_tiles: list[int], result: RecaptchaV2Result, round_no: int) -> None:
+    def click_selected_tiles(self, driver: Any, selected_tiles: list[int], result: RecaptchaV2Result, round_no: int) -> set[int]:
         adapter = self._get_adapter(driver)
+        successful_clicks: set[int] = set()
         for i in sorted(selected_tiles):
             clicked = False
             for attempt_click in range(3):
@@ -217,6 +218,14 @@ class RecaptchaSolver:
                     tile = all_tiles[i]
                     if adapter.kind == 'selenium':
                         try:
+                            driver.execute_script("arguments[0].scrollIntoView({block: 'center', inline: 'center'});", tile)
+                        except Exception:
+                            pass
+                        try:
+                            selected_before = 'rc-imageselect-tileselected' in ((tile.get_attribute('class') or '').lower())
+                        except Exception:
+                            selected_before = False
+                        try:
                             ActionChains(driver).move_to_element(tile).pause(0.1).click().perform()
                             clicked = True
                         except Exception:
@@ -225,6 +234,17 @@ class RecaptchaSolver:
                                 clicked = True
                             except Exception as exc:
                                 self.append_trace(result, round=round_no, note=f'fallback click failed on tile {i}: {exc}')
+                        time.sleep(random.uniform(0.25, 0.6))
+                        try:
+                            instruction, table = self.wait_challenge_ready(driver, timeout=3)
+                            refreshed_tiles = adapter.get_table_tiles(table)
+                            if i < len(refreshed_tiles):
+                                refreshed_tile = refreshed_tiles[i]
+                                selected_after = 'rc-imageselect-tileselected' in ((refreshed_tile.get_attribute('class') or '').lower())
+                                if selected_after or not selected_before:
+                                    clicked = True
+                        except Exception:
+                            pass
                         driver.switch_to.default_content()
                     else:
                         try:
@@ -233,7 +253,7 @@ class RecaptchaSolver:
                         except Exception as exc:
                             self.append_trace(result, round=round_no, note=f'native drission click failed on tile {i}: {exc}')
                     if clicked:
-                        time.sleep(random.uniform(0.25, 0.6))
+                        successful_clicks.add(i)
                         break
                 except Exception as click_exc:
                     self.append_trace(result, round=round_no, note=f'click retry {attempt_click + 1} failed on tile {i}: {click_exc}')
@@ -244,6 +264,7 @@ class RecaptchaSolver:
                     time.sleep(0.35)
             if not clicked:
                 self.append_trace(result, round=round_no, note=f'click failed on tile {i}')
+        return successful_clicks
 
     def solve(self, *, driver, provider='gemini-cli', model=None, max_rounds=5, screenshots_dir='screenshots', ask_recaptcha_instructions_with_provider=None, check_tile_for_object=None, debug=True, **kwargs: Any) -> dict[str, Any]:
         result = self.new_result()
@@ -255,7 +276,7 @@ class RecaptchaSolver:
             result.message = 'required callbacks missing for recaptchav2 engine'
             return result.to_dict()
 
-        visionai_rank_grid_tiles = None
+        visionai_rank_grid_tiles = kwargs.get('rank_grid_tiles')
         if provider == 'visionai-local':
             try:
                 from vision_ai_recaptcha_solver.visionai_subprocess import visionai_rank_grid_tiles_subprocess as _rank
@@ -302,10 +323,10 @@ class RecaptchaSolver:
 
                 instruction_path = f'{screenshots_dir}/recaptcha_instruction_{round_no}.png'
                 try:
-                    instruction_element.screenshot(instruction_path)
+                    adapter.capture_element(instruction_element, instruction_path)
                 except Exception:
                     try:
-                        table.screenshot(instruction_path)
+                        adapter.capture_element(table, instruction_path)
                     except Exception:
                         pass
                 if Path(instruction_path).exists():
@@ -356,7 +377,13 @@ class RecaptchaSolver:
                     selected_tiles = handler_result
 
                 current_attempt_tiles = set(selected_tiles)
-                new_tiles_to_click = current_attempt_tiles - clicked_tile_indices
+                if captcha_type == CaptchaType.DYNAMIC_3X3:
+                    # Dynamic challenges replace images in-place. A cell clicked in a
+                    # previous round may need another click after the tile refreshes,
+                    # so the static duplicate-click guard must not suppress it.
+                    new_tiles_to_click = current_attempt_tiles
+                else:
+                    new_tiles_to_click = current_attempt_tiles - clicked_tile_indices
                 num_last_clicks = len(new_tiles_to_click)
                 self.append_trace(
                     result,
@@ -379,10 +406,11 @@ class RecaptchaSolver:
                         continue
                     self.append_trace(result, round=round_no, target=object_name, note='no cells clicked and reload unavailable')
 
-                self.click_selected_tiles(driver, list(new_tiles_to_click), result, round_no)
-                clicked_tile_indices.update(new_tiles_to_click)
+                successful_clicks = self.click_selected_tiles(driver, list(new_tiles_to_click), result, round_no)
+                clicked_tile_indices.update(successful_clicks)
+                num_last_clicks = len(successful_clicks)
 
-                driver.switch_to.default_content()
+                self._get_adapter(driver).reset_context(driver)
                 time.sleep(1.25)
                 if self.checkbox_verified(driver, timeout=4):
                     result.verified = True
@@ -396,15 +424,27 @@ class RecaptchaSolver:
                 challenge_open = self.challenge_still_open(driver)
                 if challenge_open:
                     try:
-                        switch_to_challenge_frame(driver, timeout=5)
-                        verify_button = WebDriverWait(driver, 3).until(EC.presence_of_element_located((By.ID, 'recaptcha-verify-button')))
-                        driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", verify_button)
-                        time.sleep(0.2)
-                        try:
+                        adapter = self._get_adapter(driver)
+                        if adapter.kind == 'selenium':
+                            frame = adapter.get_challenge_frame(driver, timeout=5)
+                            if frame is None:
+                                raise RuntimeError('verify challenge frame missing')
+                            verify_button = WebDriverWait(driver, 3).until(EC.presence_of_element_located((By.ID, 'recaptcha-verify-button')))
+                            driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", verify_button)
+                            time.sleep(0.2)
+                            try:
+                                verify_button.click()
+                            except Exception:
+                                driver.execute_script('arguments[0].click();', verify_button)
+                            adapter.reset_context(driver)
+                        else:
+                            frame = adapter.get_challenge_frame(driver, timeout=5)
+                            if not frame:
+                                raise RuntimeError('verify challenge frame missing')
+                            verify_button = frame.ele('#recaptcha-verify-button', timeout=1)
+                            if not verify_button:
+                                raise RuntimeError('verify button missing')
                             verify_button.click()
-                        except Exception:
-                            driver.execute_script('arguments[0].click();', verify_button)
-                        driver.switch_to.default_content()
                         if self.wait_for_verify_result(driver, timeout=8.0):
                             result.verified = True
                             result.token = self.extract_token(driver)
@@ -415,7 +455,7 @@ class RecaptchaSolver:
                             return result.to_dict()
                         time.sleep(0.4)
                     except Exception as verify_exc:
-                        driver.switch_to.default_content()
+                        self._get_adapter(driver).reset_context(driver)
                         self.append_trace(result, round=round_no, note=f'verify click not usable: {verify_exc}')
                 else:
                     self.append_trace(result, round=round_no, note='challenge closed after clicks, skipping verify button')
@@ -430,8 +470,18 @@ class RecaptchaSolver:
                     return result.to_dict()
 
                 if self.challenge_still_open(driver):
+                    settle_open = self.challenge_still_open(driver)
+                    settle_urls = []
+                    try:
+                        settle_urls = self._get_adapter(driver).get_image_urls(driver, timeout=2)
+                    except Exception:
+                        settle_urls = []
+                    if settle_urls and current_urls and settle_urls != current_urls:
+                        self.append_trace(result, round=round_no, note='challenge changed after verify settle wait, continue next round')
+                        previous_urls = settle_urls
+                        continue
                     self.append_trace(result, round=round_no, note='challenge still open after verify settle wait, continue next round')
-                    previous_urls = current_urls or previous_urls
+                    previous_urls = settle_urls or current_urls or previous_urls
                     continue
 
                 previous_urls = current_urls or previous_urls

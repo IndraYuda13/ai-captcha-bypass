@@ -22,6 +22,9 @@ class BrowserAdapter:
     def has_challenge_open(self, browser: Any, timeout: float = 5.0) -> bool:
         raise NotImplementedError
 
+    def reset_context(self, browser: Any) -> None:
+        raise NotImplementedError
+
     def get_challenge_frame(self, browser: Any, timeout: float = 5.0):
         raise NotImplementedError
 
@@ -95,6 +98,9 @@ class SeleniumAdapter(BrowserAdapter):
             time.sleep(0.1)
         return False
 
+    def reset_context(self, browser: Any) -> None:
+        browser.switch_to.default_content()
+
     def get_challenge_frame(self, browser: Any, timeout: float = 5.0):
         from selenium.webdriver.common.by import By
 
@@ -157,7 +163,38 @@ class SeleniumAdapter(BrowserAdapter):
         return []
 
     def capture_element(self, element: Any, path: str) -> None:
-        element.screenshot(path)
+        from selenium.webdriver.common.by import By
+
+        try:
+            browser = getattr(element, 'parent', None)
+            if browser is not None:
+                browser.execute_script("arguments[0].scrollIntoView({block: 'center', inline: 'center'});", element)
+                time.sleep(0.15)
+        except Exception:
+            pass
+        try:
+            element.screenshot(path)
+            return
+        except Exception:
+            browser = getattr(element, 'parent', None)
+            if browser is None:
+                raise
+            png = browser.get_screenshot_as_png()
+            location = element.location_once_scrolled_into_view
+            size = element.size
+            from io import BytesIO
+            from PIL import Image
+
+            img = Image.open(BytesIO(png))
+            left = max(0, int(location.get('x', 0)))
+            top = max(0, int(location.get('y', 0)))
+            width = max(1, int(size.get('width', 1)))
+            height = max(1, int(size.get('height', 1)))
+            right = min(img.width, left + width)
+            bottom = min(img.height, top + height)
+            if right <= left or bottom <= top:
+                raise RuntimeError(f'invalid crop bounds while capturing element: {(left, top, right, bottom)}')
+            img.crop((left, top, right, bottom)).save(path)
 
 
 class DrissionAdapter(BrowserAdapter):
@@ -239,6 +276,9 @@ class DrissionAdapter(BrowserAdapter):
 
     def has_challenge_open(self, browser: Any, timeout: float = 5.0) -> bool:
         return self._challenge_frame(browser, timeout=timeout) is not None
+
+    def reset_context(self, browser: Any) -> None:
+        return None
 
     def get_challenge_frame(self, browser: Any, timeout: float = 5.0):
         return self._challenge_frame(browser, timeout=timeout)

@@ -3,9 +3,9 @@
 ## Top-level parity checklist
 
 - [in progress] Replace hybrid app-first structure with VisionAI-style package-first architecture
-- [pending] Migrate browser/runtime from raw Selenium lane toward replicator-driven solver flow
-- [pending] Split challenge logic into dedicated handlers matching reference structure
-- [pending] Introduce formal solver config, typed result objects, and stable public API
+- [in progress] Migrate browser/runtime from raw Selenium lane toward replicator-driven solver flow
+- [in progress] Split challenge logic into dedicated handlers matching reference structure
+- [in progress] Introduce formal solver config, typed result objects, and stable public API
 - [pending] Add CLI and async entrypoints matching reference behavior
 - [pending] Verify parity with reference on v2 dynamic, selection, 4x4, and token extraction flow
 
@@ -76,16 +76,29 @@
 - [x] Implement VisionAI-style dynamic refresh loop structure (URL change tracking + changed-cell recomposite)
 - [x] Prove dynamic 3x3 downstream behavior on a real refreshed 3x3 challenge
 - [x] Add first 4x4 over-selection guard in visionai-local wrapper
-- [ ] Tune 4x4 detection over-selection against VisionAI behavior
+- [in progress] Tune 4x4 detection over-selection against VisionAI behavior
 
 ## Parity refactor execution order
 
 - [in progress] Audit exact component map versus `DannyLuna17/VisionAIRecaptchaSolver`
-- [pending] Create local package skeleton under `src/vision_ai_recaptcha_solver/`
-- [pending] Extract config, types, and exceptions from ad-hoc runtime code
-- [pending] Extract browser navigation helpers into dedicated module
-- [pending] Move 3x3 selection, 3x3 dynamic, and 4x4 logic into separate handlers
-- [pending] Build synchronous solver class around the extracted components
-- [pending] Decide whether to embed or wrap `recaptcha-domain-replicator` as the browser entry boundary
+- [done] Create local package skeleton under `src/vision_ai_recaptcha_solver/`
+- [done] Extract config, types, and exceptions from ad-hoc runtime code
+- [done] Extract browser navigation helpers into dedicated module
+- [done] Move 3x3 selection, 3x3 dynamic, and 4x4 logic into separate handlers
+- [done] Build synchronous solver class around the extracted components
+- [in progress] Decide whether to embed or wrap `recaptcha-domain-replicator` as the browser entry boundary
 - [pending] Add async solver and CLI only after sync solver shape is stable
-- [pending] Re-run live verification and score current parity honestly
+- [in progress] Re-run live verification and score current parity honestly
+
+## Active lane after ERR-20260423-002
+
+- [done] Stop treating `main.py` as the default live lane
+- [done] Re-anchor live execution to package solver boundary (`src/vision_ai_recaptcha_solver/solver.py` / thin wrapper callers)
+- [done] First live WARP-backed package-solver rerun executed
+- [done] Fix `visionai_local` namespace collision so package lane can reuse local per-tile fallback without importing the reference repo over the local package namespace
+- [done] Re-run package solver after namespace fix and compare against old runner behavior
+- [done] Add adapter-level screenshot fallback for unstable Selenium element capture
+- [in progress] Improve package-lane decision quality / refresh progression after namespace and capture fixes
+- [done] Diagnose why per-tile subprocess confirmation still exits non-zero for some classes during package-lane fallback
+- [in progress] Tune 4x4 over-selection in package lane after subprocess stabilization
+- [in progress] Add conservative 4x4 confirmation/trim policy in package lane and re-test live

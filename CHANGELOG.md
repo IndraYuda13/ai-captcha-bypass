@@ -273,3 +273,136 @@
   - reference VisionAI scoring works live
   - selected tiles finally become non-empty in the real live path
   - the next blocker is now only the leftover Selenium `switch_to` path after tile selection
+
+## 2026-04-23
+
+### Step 18 WARP proxy browser lane + click/settle hardening
+- Confirmed the VPS now has a working Cloudflare WARP proxy lane on `socks5://127.0.0.1:40000` and verified browser egress can differ from the raw VPS IP.
+- Added browser proxy injection support through env in both Selenium entry boundaries:
+  - `main.py`
+  - `src/vision_ai_recaptcha_solver/browser/factory.py`
+- Why this exists:
+  - Boskuu asked to retest the solver through the new non-default egress path without switching the whole VPS routing.
+  - Mode chosen is per-browser proxy so SSH and unrelated services stay on the normal route.
+- Live evidence after retest with `WARP_PROXY=socks5://127.0.0.1:40000`:
+  - challenge opened normally
+  - DOM target extraction still worked
+  - VisionAI ranking still worked live under proxy
+  - multi-round flow continued under the proxy lane
+- New narrowed blocker from this retest:
+  - failure is still not primarily IP or browser bootstrap
+  - the active misses are tile-click reliability and post-click settle/oracle quality
+  - one live symptom was tile-click failure on a chosen cell, followed by `verify button not found` / refresh settle weakness
+- Follow-up hardening applied in `src/vision_ai_recaptcha_solver/solver.py`:
+  - `click_selected_tiles(...)` now returns the set of **successful** clicks instead of assuming every intended click landed
+  - clicked-tile memory now only updates from verified successful clicks
+  - Selenium click path now scrolls tile into view first and tries to observe selected-state after click
+  - post-verify continuation now records fresh image URLs when the board changed after settle wait instead of blindly reusing stale `current_urls`
+- What this change is meant to prevent:
+  - stale memory saying a tile was clicked when the click actually failed
+  - weak dynamic refresh comparison caused by carrying the wrong URL snapshot into the next round
+- Current truth after this patch:
+  - this is a reliability hardening pass, not a final success claim yet
+  - the next required step is a fresh live rerun to see whether successful-click tracking and improved settle URL carryover produce a cleaner downstream solve path
+- Live rerun result after the hardening pass:
+  - the browser now survives the WARP lane and reaches fresh live boards again
+  - one run exposed a first-round DOM-target-read failure in the old `main.py` runner, so the DOM selector/text parser there was also widened to mirror the newer DOM-first lane better
+  - the next rerun got past that and reached a real 4x4 `crosswalks` board under WARP
+  - it clicked 5 cells, refreshed into round 2, then failed during the next grid capture with Selenium's `ElementClickInterceptedException` while trying to screenshot the table at an absurd negative y-position
+- Meaning of the new blocker:
+  - the dominant problem is shifting again from target extraction to **viewport / frame context instability** in the legacy Selenium runner
+  - specifically, after a refresh the table element can still exist but be in a bad click/screenshot state, so the old runner is too fragile around post-refresh reacquire
+- What must not be casually removed later:
+  - env-driven browser proxy support in both Selenium creation boundaries
+  - successful-click-only memory update
+  - fresh settle URL carryover after challenge changes
+  - the lesson that the legacy `main.py` Selenium lane still needs explicit post-refresh reacquire/scroll stabilization, even after WARP support and DOM target fixes
+
+### Step 19 package-lane re-anchor and first live run
+- Boskuu explicitly chose the `lane terbaik`, and the mistake was persisted so this project does not drift back to the legacy runner by habit.
+- Re-anchored the active lane to the package solver boundary:
+  - canonical solver: `src/vision_ai_recaptcha_solver/solver.py`
+  - thin wrapper caller: `token_harvest/recaptchav2_engine.py`
+- Added a temporary local runner `tmp_run_package_solver.py` to execute the package solver directly with:
+  - Selenium session boundary owned by the package
+  - WARP browser proxy still active through env
+  - local callback wiring for instruction fallback and tile checks
+- First live package-lane result:
+  - package solver ran end-to-end through 5 rounds under WARP
+  - DOM target extraction worked on real rounds (`crosswalks`, later `bus`)
+  - structured trace/artifact output was produced from the package lane itself
+  - honest result was still `status=error`, `stage=incomplete`, `verified=false`
+- Most important new blocker from the package lane:
+  - local per-tile fallback inside the package runner hit `No module named 'vision_ai_recaptcha_solver.detector.yolo_detector'`
+  - root cause is namespace collision: `visionai_local.py` prepends the reference repo's `vision_ai_recaptcha_solver` package onto `sys.path`, which can override or conflict with the local package solver namespace depending on import order
+- Meaning:
+  - the package boundary is now proven runnable and should remain the main lane
+  - but local VisionAI helper reuse still needs import-boundary cleanup so the package lane can safely call the local detector helper without contaminating its own package namespace
+- What must not be casually removed later:
+  - the decision that package solver is now the default live lane
+  - the temporary package runner as a fast repro tool until a formal CLI exists
+  - the lesson that `visionai_local.py` needs namespace-safe isolation from the local `vision_ai_recaptcha_solver` package
+
+### Step 20 namespace-safe VisionAI helper isolation + package rerun
+- Refactored `visionai_local.py` so it no longer globally prepends the DannyLuna reference `vision_ai_recaptcha_solver` package into the main process import graph.
+- Added a new isolated subprocess helper:
+  - `tmp_visionai_contains_runner.py`
+- New helper behavior:
+  - per-tile contains checks now run in the reference repo venv as a subprocess
+  - grid ranking still stays in its existing subprocess lane
+  - local process keeps the project package namespace clean
+- Added a new permanent rule in memory for this project:
+  - DannyLuna reference helpers are namespace-sensitive and must be isolated instead of mutating shared imports in the package lane
+- Package-lane rerun after the namespace fix:
+  - package solver again ran live under WARP
+  - namespace collision blocker was resolved enough for the package lane to continue without the earlier import contamination failure
+  - 4x4 `stairs` round reached structured VisionAI square ranking and selected `[9, 10, 13]`
+  - the old Selenium negative-y click/screenshot instability reappeared inside the package lane too, proving the issue belongs to the Selenium boundary itself rather than only the old `main.py` runner
+- Additional hardening applied after that evidence:
+  - Selenium adapter `capture_element(...)` now tries scroll-into-view first and falls back to full-page screenshot + crop when direct element screenshot is unstable
+  - instruction capture inside `solver.py` was switched to use adapter capture instead of raw element `.screenshot(...)`
+- Latest rerun truth after the capture hardening:
+  - package lane completed without crashing
+  - honest final state still remained incomplete / unverified
+  - dynamic rounds like `cars` and `bicycles` could still end with zero new clicks and challenge reload, so the active blocker is no longer namespace collision; it is solver decision quality / refresh-completion quality under the Selenium package boundary
+- Follow-up patch after Boskuu pushed to keep moving:
+  - dynamic handler was tightened so VisionAI candidate tiles are now explicitly re-confirmed through per-tile checks before trusting a dynamic/top-level pick
+  - if confirmation rejects the proposed tiles, the handler now logs that outcome instead of silently pretending the ranking path was enough
+  - if top-level confirmation rejects everything but a truly high-confidence rank still exists, the handler keeps a minimal single-tile fallback instead of immediately collapsing to empty
+- Live result after this dynamic-handler patch:
+  - package solver remained stable and reached later 4x4 rounds like `motorcycles` and `bicycles`
+  - 4x4 selection stayed strong, with real picks like `[4, 5, 8, 9]`
+  - final state still stayed `incomplete`, and the log showed the per-tile subprocess fallback is still failing noisily for some classes like `bicycles`
+- Meaning of the newest state:
+  - dynamic decision logic is now more explicit and better instrumented
+  - but there is still a secondary defect inside the subprocess-based `visionai_contains_object` helper path for some per-tile fallback calls, so the package lane is partly advancing on ranking alone while fallback confirmations are degraded
+- What must not be casually removed later:
+  - subprocess isolation for `visionai_contains_object`
+  - adapter-level screenshot fallback for unstable Selenium element capture
+  - the finding that namespace collision is no longer the top blocker; decision quality and challenge progression are now the active lane again
+  - the newer lesson that per-tile confirmation subprocess health must be checked separately from grid-ranking health
+
+## 2026-05-03 - reCAPTCHA v2 private service hardening
+
+- Added local service wrapper for the private reCAPTCHA v2 solver endpoint:
+  - systemd unit: `private-recaptchav2.service`
+  - local URL: `http://127.0.0.1:7862/recaptchav2`
+  - default proxy: `http://127.0.0.1:31001` so v2 browser traffic exits via Surfshark node-01 Indonesia.
+- Updated `token_harvest/recaptchav2_server.py`:
+  - adds `src/` to `PYTHONPATH` so the package solver imports cleanly from the service process
+  - adds Chrome proxy configuration via `RECAPTCHAV2_PROXY`, per-request `proxy`, and per-request `noProxy`
+  - adds `gemini-cli-grid` grid analysis provider so Gemini receives one whole grid image instead of slow per-tile prompts
+  - returns structured proxy/request metadata in the JSON result
+  - keeps Gemini timeout failures structured instead of crashing the whole endpoint
+- Updated v2 solver package boundary:
+  - allows callback-based grid rankers beyond `visionai-local`
+  - lets dynamic challenges click the same cell again after a tile refresh, because dynamic reCAPTCHA replaces images in-place.
+- Added `tests/test_recaptchav2_server.py` covering proxy option building, tile index parsing, and proxy selection.
+- Verification:
+  - `python -m unittest tests/test_recaptchav2_server.py` passed
+  - `python -m py_compile ...` passed
+  - `private-recaptchav2.service` active on `127.0.0.1:7862`
+  - `/` health endpoint returns JSON OK
+  - `/recaptchav2` smoke with `gemini-cli-grid` + Surfshark node-01 returns structured JSON and uses the proxy, but 2captcha demo did not reach `verified=true` within tested round budgets. Current blocker is solver accuracy/round handling on multi-round image challenges, not service startup/proxy plumbing.
+
+Do not casually remove the dynamic same-cell re-click rule. It exists because dynamic reCAPTCHA cells can refresh in-place and require repeated clicks on the same index.

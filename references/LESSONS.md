@@ -110,6 +110,32 @@ Reusable lessons for our solver:
 - when a provider fails, distinguish between logic bugs and provider-runtime failures like quota, missing binary, or relay 500.
 - preserve debug artifacts per request id because they let us verify whether the target object or tile picks were wrong.
 
+## 2026-04-24 - package-lane VisionAI subprocess stabilization
+
+Key takeaways:
+- the package solver no longer has the earlier per-tile confirmation crash path after aligning `visionai_local.py` with the same subprocess + `PYTHONPATH` setup already used by the package ranking helper.
+- live package smoke now runs cleanly through all rounds and returns structured `incomplete` instead of dying mid-confirmation.
+- this narrows the active blocker further: current misses are now dominated by 4x4 over-selection quality, not helper-runtime instability.
+- a representative live smoke kept the challenge open for five rounds while VisionAI repeatedly selected large 4x4 sets for prompts like `motorcycles` and later `bicycles`.
+
+Reusable lessons for our solver:
+- keep all VisionAI entrypoints on one subprocess/runtime contract so ranking and confirmation do not drift.
+- when a stability fix lands, re-run live and rewrite the blocker honestly instead of leaving the old blocker in place.
+- for the next lane, tune 4x4 selection conservatively before touching the already-proven 3x3 dynamic architecture.
+
+## 2026-04-24 - conservative 4x4 trim rerun
+
+Key takeaways:
+- a stricter package-lane 4x4 policy was live-tested by adding a config-backed overselect guard, per-tile confirmation, and a smaller final trim cap.
+- this changed downstream behavior for real. In the tuned rerun, a heavy 4x4 candidate set such as `[4,5,6,8,9,10]` was cut down to a confirmed pair `[8,9]` before clicking.
+- so the solver is no longer blindly forwarding the full raw 4x4 set into the board.
+- however, the run still ended `incomplete`, which means the new conservative filter improved action quality but is not yet sufficient as a final solve oracle.
+
+Reusable lessons for our solver:
+- 4x4 quality tuning should be measured by changed click-set behavior first, then by final verify rate.
+- config-backed knobs are better than hard-coded thresholds because we can sweep them without rewriting handler logic.
+- the next useful lane is threshold/cap sweep against saved 4x4 artifacts or repeated live smokes, not another structural refactor.
+
 ## Combined conclusion
 
 For our private solver roadmap, the references suggest three permanent architecture rules:
