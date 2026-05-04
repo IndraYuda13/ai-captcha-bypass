@@ -42,3 +42,8 @@ Purpose:
 - token extraction / `g-recaptcha-response` harvesting patterns
 - browser-side anti-detection / browser realism patterns
 - iframe lifecycle handling patterns
+
+- Internal case `references/lessons/cases/2026-05-05-coinadster-recaptcha-cloudflare-bridge.md`
+  - status: investigated
+  - focus: minimal bridge for Coinadster Cloudflare-cleared session into private reCAPTCHA v2 solver
+  - conclusion: preseed solver Chrome with FlareSolverr cookies + matching UA + same proxy; current project code does not expose direct FlareSolverr CDP attach.

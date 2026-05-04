@@ -41,7 +41,7 @@ def now_iso():
     return datetime.utcnow().isoformat() + 'Z'
 
 
-def build_chrome_options(proxy=None):
+def build_chrome_options(proxy=None, user_agent=None):
     chrome_options = webdriver.ChromeOptions()
     chrome_options.add_argument('--headless=new')
     chrome_options.add_argument('--no-sandbox')
@@ -65,6 +65,9 @@ def build_chrome_options(proxy=None):
     selected_proxy = (proxy if proxy is not None else os.getenv('RECAPTCHAV2_PROXY', '')).strip()
     if selected_proxy:
         chrome_options.add_argument(f'--proxy-server={selected_proxy}')
+    selected_user_agent = (user_agent or '').strip()
+    if selected_user_agent:
+        chrome_options.add_argument(f'--user-agent={selected_user_agent}')
     profile_dir = tempfile.mkdtemp(prefix='recaptchav2-chrome-', dir='/tmp')
     chrome_options.add_argument(f'--user-data-dir={profile_dir}')
     chrome_options.binary_location = os.getenv('CHROME_BINARY', '/usr/bin/google-chrome')
@@ -123,10 +126,51 @@ def select_proxy(payload):
     return os.getenv('RECAPTCHAV2_PROXY', '').strip() or DEFAULT_PROXY or None
 
 
-def make_driver(proxy=None):
-    chrome_options, profile_dir = build_chrome_options(proxy=proxy)
+def make_driver(proxy=None, user_agent=None):
+    chrome_options, profile_dir = build_chrome_options(proxy=proxy, user_agent=user_agent)
     driver = webdriver.Chrome(options=chrome_options)
     return driver, profile_dir
+
+
+def preseed_cookies(driver, cookies, page_url):
+    """Set Cloudflare/session cookies before the solver opens the protected page."""
+    if not cookies:
+        return 0
+    try:
+        driver.execute_cdp_cmd('Network.enable', {})
+    except Exception:
+        pass
+    count = 0
+    for cookie in cookies:
+        if not isinstance(cookie, dict):
+            continue
+        name = cookie.get('name')
+        value = cookie.get('value')
+        if not name or value is None:
+            continue
+        payload = {
+            'name': name,
+            'value': value,
+            'url': page_url or 'https://coinadster.com/',
+            'path': cookie.get('path') or '/',
+        }
+        if cookie.get('domain'):
+            payload['domain'] = cookie.get('domain')
+        if cookie.get('secure') is not None:
+            payload['secure'] = bool(cookie.get('secure'))
+        if cookie.get('httpOnly') is not None:
+            payload['httpOnly'] = bool(cookie.get('httpOnly'))
+        try:
+            driver.execute_cdp_cmd('Network.setCookie', payload)
+            count += 1
+        except Exception:
+            try:
+                driver.get(page_url or 'https://coinadster.com/')
+                driver.add_cookie({k: v for k, v in payload.items() if k in ('name', 'value', 'path', 'domain', 'secure', 'httpOnly')})
+                count += 1
+            except Exception:
+                pass
+    return count
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -173,7 +217,8 @@ class Handler(BaseHTTPRequestHandler):
         profile_dir = None
         try:
             proxy = select_proxy(payload)
-            driver, profile_dir = make_driver(proxy=proxy)
+            user_agent = payload.get('userAgent') or payload.get('ua') or ''
+            driver, profile_dir = make_driver(proxy=proxy, user_agent=user_agent)
             provider = payload.get('provider') or 'gemini-cli'
             model = payload.get('model')
             instruction_provider = payload.get('instructionProvider') or provider
@@ -184,6 +229,7 @@ class Handler(BaseHTTPRequestHandler):
             request_id = payload.get('requestId') or f"run_{int(datetime.utcnow().timestamp())}"
             screenshots_dir = str(DEBUG_DIR / request_id)
             os.makedirs(screenshots_dir, exist_ok=True)
+            cookie_count = preseed_cookies(driver, payload.get('cookies') or [], page_url)
 
             def ask_instruction(image_path, _provider, _model):
                 return ask_recaptcha_instructions_with_provider(image_path, instruction_provider, instruction_model)
@@ -205,6 +251,8 @@ class Handler(BaseHTTPRequestHandler):
             result['requestId'] = request_id
             result['pageUrl'] = page_url
             result['proxy'] = proxy or ''
+            result['cookiePreseedCount'] = cookie_count
+            result['userAgentPreseeded'] = bool(user_agent)
             result['time'] = now_iso()
             self._send(200, result)
         except Exception as exc:

@@ -59,29 +59,70 @@ class SeleniumAdapter(BrowserAdapter):
 
     def get_checkbox_checked(self, browser: Any, timeout: float = 8.0) -> bool:
         from selenium.webdriver.common.by import By
-        from selenium.webdriver.support import expected_conditions as EC
-        from selenium.webdriver.support.ui import WebDriverWait
 
-        browser.switch_to.default_content()
-        frame = WebDriverWait(browser, timeout).until(EC.presence_of_element_located((By.XPATH, "//iframe[@title='reCAPTCHA']")))
-        browser.switch_to.frame(frame)
-        try:
-            anchor = WebDriverWait(browser, timeout).until(EC.presence_of_element_located((By.ID, 'recaptcha-anchor')))
-            return (anchor.get_attribute('aria-checked') or '').lower() == 'true'
-        finally:
+        end = time.time() + timeout
+        while time.time() < end:
             browser.switch_to.default_content()
+            frames = list(browser.find_elements(By.TAG_NAME, 'iframe'))
+            for idx in range(len(frames)):
+                try:
+                    browser.switch_to.default_content()
+                    frame = browser.find_elements(By.TAG_NAME, 'iframe')[idx]
+                    title = (frame.get_attribute('title') or '').lower()
+                    src = (frame.get_attribute('src') or '').lower()
+                    if 'recaptcha' not in title and 'api2/anchor' not in src:
+                        continue
+                except Exception:
+                    continue
+                try:
+                    browser.switch_to.frame(frame)
+                    anchors = browser.find_elements(By.ID, 'recaptcha-anchor')
+                    for anchor in anchors:
+                        if (anchor.get_attribute('aria-checked') or '').lower() == 'true':
+                            return True
+                except Exception:
+                    pass
+                finally:
+                    browser.switch_to.default_content()
+            time.sleep(0.1)
+        return False
 
     def click_checkbox(self, browser: Any, timeout: float = 10.0) -> None:
         from selenium.webdriver.common.by import By
-        from selenium.webdriver.support import expected_conditions as EC
-        from selenium.webdriver.support.ui import WebDriverWait
 
-        browser.switch_to.default_content()
-        frame = WebDriverWait(browser, timeout).until(EC.presence_of_element_located((By.XPATH, "//iframe[@title='reCAPTCHA']")))
-        browser.switch_to.frame(frame)
-        checkbox = WebDriverWait(browser, timeout).until(EC.element_to_be_clickable((By.CLASS_NAME, 'recaptcha-checkbox-border')))
-        checkbox.click()
-        browser.switch_to.default_content()
+        end = time.time() + timeout
+        last_error = None
+        while time.time() < end:
+            browser.switch_to.default_content()
+            frames = list(browser.find_elements(By.TAG_NAME, 'iframe'))
+            for idx in range(len(frames)):
+                try:
+                    browser.switch_to.default_content()
+                    frame = browser.find_elements(By.TAG_NAME, 'iframe')[idx]
+                    title = (frame.get_attribute('title') or '').lower()
+                    src = (frame.get_attribute('src') or '').lower()
+                    if 'recaptcha' not in title and 'api2/anchor' not in src:
+                        continue
+                except Exception as exc:
+                    last_error = exc
+                    continue
+                try:
+                    browser.switch_to.frame(frame)
+                    candidates = browser.find_elements(By.CLASS_NAME, 'recaptcha-checkbox-border') + browser.find_elements(By.ID, 'recaptcha-anchor')
+                    for candidate in candidates:
+                        try:
+                            candidate.click()
+                        except Exception:
+                            browser.execute_script('arguments[0].click();', candidate)
+                        return
+                except Exception as exc:
+                    last_error = exc
+                finally:
+                    browser.switch_to.default_content()
+            time.sleep(0.1)
+        if last_error:
+            raise last_error
+        raise RuntimeError('reCAPTCHA checkbox frame found but no clickable checkbox element was available')
 
     def has_challenge_open(self, browser: Any, timeout: float = 5.0) -> bool:
         from selenium.webdriver.common.by import By
