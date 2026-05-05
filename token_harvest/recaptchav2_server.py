@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
+import contextlib
 import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -138,15 +140,27 @@ def run_official_solver(payload, request_id, screenshots_dir, proxy, user_agent,
     src_root = str(PROJECT_ROOT / 'src')
     env['PYTHONPATH'] = src_root + (os.pathsep + env['PYTHONPATH'] if env.get('PYTHONPATH') else '')
     try:
-        proc = subprocess.run(
+        proc = subprocess.Popen(
             [python_bin, str(runner)],
-            input=json.dumps(outbound),
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            capture_output=True,
-            timeout=timeout,
             env=env,
+            start_new_session=True,
         )
+        stdout, stderr = proc.communicate(input=json.dumps(outbound), timeout=timeout)
+        proc.stdout = stdout
+        proc.stderr = stderr
     except subprocess.TimeoutExpired as exc:
+        with contextlib.suppress(Exception):
+            os.killpg(proc.pid, signal.SIGTERM)
+        with contextlib.suppress(Exception):
+            proc.kill()
+        with contextlib.suppress(Exception):
+            stdout, stderr = proc.communicate(timeout=5)
+            exc.stdout = (exc.stdout or '') + (stdout or '')
+            exc.stderr = (exc.stderr or '') + (stderr or '')
         return {
             'status': 'error',
             'verified': False,

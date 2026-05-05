@@ -404,6 +404,7 @@ class RecaptchaSolver:
             self._detector.ensure_warmup_complete()
 
             # Solve loop
+            solved = False
             while attempts < self.config.max_attempts:
                 attempts += 1
                 self.logger.debug(f"Solve attempt {attempts}/{self.config.max_attempts}")
@@ -412,24 +413,15 @@ class RecaptchaSolver:
                     # Determine captcha type and get target
                     captcha_type = self._determine_captcha_type(browser)
                     last_captcha_type = captcha_type
+                    if self._should_fast_reload(browser, captcha_type):
+                        self.logger.info("Unsupported target for this captcha type, fast reloading")
+                        self._reload_challenge(browser)
+                        continue
                     target_class = self._get_target_class(browser)
 
                     if target_class is None:
                         self.logger.info("Unknown target, reloading captcha")
-                        click_reload_button(browser)
-                        human_delay(
-                            mean=self.config.human_delay_mean,
-                            sigma=self.config.human_delay_sigma,
-                        )
-                        # Get new challenge
-                        challenge_frame = get_challenge_iframe(
-                            browser, timeout=self.config.default_timeout
-                        )
-                        if challenge_frame:
-                            challenge_frame.ele(
-                                "#rc-imageselect-target td",
-                                timeout=self.config.default_timeout,
-                            )
+                        self._reload_challenge(browser)
                         continue
 
                     # Get handler and solve
@@ -438,19 +430,7 @@ class RecaptchaSolver:
 
                     if not clicked_cells:
                         self.logger.info("No cells clicked, reloading")
-                        click_reload_button(browser)
-                        human_delay(
-                            mean=self.config.human_delay_mean,
-                            sigma=self.config.human_delay_sigma,
-                        )
-                        challenge_frame = get_challenge_iframe(
-                            browser, timeout=self.config.default_timeout
-                        )
-                        if challenge_frame:
-                            challenge_frame.ele(
-                                "#rc-imageselect-target td",
-                                timeout=self.config.default_timeout,
-                            )
+                        self._reload_challenge(browser)
                         continue
 
                     # Click verify
@@ -460,6 +440,7 @@ class RecaptchaSolver:
                     # Wait for verify result (waits until button is not disabled)
                     if wait_for_verify_result(browser, timeout=self.config.default_timeout):
                         self.logger.info("Captcha solved successfully!")
+                        solved = True
                         break
 
                     # Not solved, continue to next attempt
@@ -467,26 +448,19 @@ class RecaptchaSolver:
 
                 except LowConfidenceError as e:
                     self.logger.info(f"Low confidence detection, reloading: {e}")
-                    click_reload_button(browser)
-                    human_delay(
-                        mean=self.config.human_delay_mean,
-                        sigma=self.config.human_delay_sigma,
-                    )
-                    challenge_frame = get_challenge_iframe(
-                        browser, timeout=self.config.default_timeout
-                    )
-                    if challenge_frame:
-                        challenge_frame.ele(
-                            "#rc-imageselect-target td",
-                            timeout=self.config.default_timeout,
-                        )
+                    self._reload_challenge(browser)
 
                 except (ElementNotFoundError, UnsupportedCaptchaError) as e:
                     self.logger.warning(f"Attempt {attempts} failed: {e}")
                     human_delay(mean=0.5, sigma=0.1)
 
+            if not solved:
+                raise TokenExtractionError(
+                    f"Captcha not solved after {attempts}/{self.config.max_attempts} attempts"
+                )
+
             # Extract token
-            token = token_handle.wait(timeout=self.config.timeout) if token_handle else None
+            token = token_handle.wait(timeout=min(self.config.timeout, 30.0)) if token_handle else None
 
             if not token:
                 raise TokenExtractionError("Failed to extract reCAPTCHA token")
@@ -506,6 +480,24 @@ class RecaptchaSolver:
             raise
         except (RuntimeError, OSError, ValueError) as e:
             raise RecaptchaSolverError(f"Solve failed: {e}") from e
+
+
+    def _reload_challenge(self, browser: Any) -> None:
+        """Reload current challenge and wait briefly for the next grid."""
+        click_reload_button(browser)
+        human_delay(mean=0.15, sigma=0.05)
+        challenge_frame = get_challenge_iframe(browser, timeout=self.config.default_timeout)
+        if challenge_frame:
+            challenge_frame.ele("#rc-imageselect-target td", timeout=self.config.default_timeout)
+
+    def _should_fast_reload(self, browser: Any, captcha_type: CaptchaType) -> bool:
+        """Skip challenges that the active YOLO path cannot solve reliably."""
+        if captcha_type != CaptchaType.SQUARE_4X4:
+            return False
+        keyword = get_target_keyword(browser)
+        if not keyword:
+            return True
+        return self._detector.get_coco_target_class(keyword) is None
 
     def _determine_captcha_type(self, browser: Any) -> CaptchaType:
         """Determine the type of captcha challenge.
