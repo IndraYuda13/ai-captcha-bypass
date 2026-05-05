@@ -44,3 +44,8 @@ Date: 2026-05-05
 - DannyLuna official `VisionAIRecaptchaSolver` with `recaptcha-domain-replicator`, DrissionPage, Ultralytics/YOLO, and model `yolo12x.pt` solved Coinadster reCAPTCHA and produced valid tokens.
 - Heavy dependencies should live in `/mnt/visionai-ref-runtime` on this VPS; root disk is too small for repeated YOLO/OpenCV installs.
 - Do not pass Coinadster PHP/Cloudflare cookies into the official solver by default. For Coinadster the robust login lane is to solve in the replica, then create a fresh target session and submit with a fresh hidden token.
+
+## Retry wrapper follow-up
+
+- `/recaptchav2` must return structured timeout JSON for official-solver hangs. If the client times out first, the HTTP server can hit broken pipe and the caller loses classification.
+- For Coinadster, bounded retry is now required around DannyLuna official solves. The solver can still hang on unsupported/slow image classes even though it has proven successful on other challenges.

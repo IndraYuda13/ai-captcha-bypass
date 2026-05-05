@@ -121,7 +121,7 @@ def run_official_solver(payload, request_id, screenshots_dir, proxy, user_agent,
     """Run DannyLuna official core in the heavy runtime venv."""
     runner = Path(__file__).with_name('dannyluna_official_runner.py')
     python_bin = os.getenv('DANNYLUNA_SOLVER_PYTHON', '/mnt/visionai-ref-runtime/venv/bin/python')
-    timeout = int(float(payload.get('timeout') or os.getenv('RECAPTCHAV2_TOKEN_TIMEOUT', '700'))) + 120
+    timeout = int(float(payload.get('timeout') or os.getenv('RECAPTCHAV2_TOKEN_TIMEOUT', '420'))) 
     server_port_base = int(os.getenv('RECAPTCHAV2_REPLICATOR_PORT_BASE', '8462'))
     outbound = dict(payload)
     outbound.update({
@@ -137,14 +137,27 @@ def run_official_solver(payload, request_id, screenshots_dir, proxy, user_agent,
     env = os.environ.copy()
     src_root = str(PROJECT_ROOT / 'src')
     env['PYTHONPATH'] = src_root + (os.pathsep + env['PYTHONPATH'] if env.get('PYTHONPATH') else '')
-    proc = subprocess.run(
-        [python_bin, str(runner)],
-        input=json.dumps(outbound),
-        text=True,
-        capture_output=True,
-        timeout=timeout,
-        env=env,
-    )
+    try:
+        proc = subprocess.run(
+            [python_bin, str(runner)],
+            input=json.dumps(outbound),
+            text=True,
+            capture_output=True,
+            timeout=timeout,
+            env=env,
+        )
+    except subprocess.TimeoutExpired as exc:
+        return {
+            'status': 'error',
+            'verified': False,
+            'token': '',
+            'stage': 'timeout',
+            'message': f'official solver timed out after {timeout}s',
+            'returnCode': 124,
+            'backend': 'official',
+            'stdoutTail': (exc.stdout or '')[-2000:] if isinstance(exc.stdout, str) else '',
+            'stderrTail': (exc.stderr or '')[-2000:] if isinstance(exc.stderr, str) else '',
+        }
     text = (proc.stdout or '').strip().splitlines()[-1] if proc.stdout else '{}'
     try:
         result = json.loads(text)
