@@ -1,18 +1,14 @@
-"""Synchronous RecaptchaSolver implementation."""
+"""Asynchronous RecaptchaSolver implementation."""
 
 from __future__ import annotations
 
-import atexit
-import contextlib
+import asyncio
 import shutil
-import signal
-import sys
 import time
-import weakref
+from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
-
-from recaptcha_domain_replicator import RecaptchaDomainReplicator
 
 from vision_ai_recaptcha_solver.browser.navigation import (
     click_checkbox,
@@ -48,93 +44,36 @@ from vision_ai_recaptcha_solver.utils import human_delay
 if TYPE_CHECKING:
     from vision_ai_recaptcha_solver.captcha.base_handler import BaseCaptchaHandler
 
-
-# Global registry for active solver instances
-_active_solvers: weakref.WeakSet[RecaptchaSolver] = weakref.WeakSet()
-_original_sigint_handler: Any = None
-_original_sigterm_handler: Any = None
-_cleanup_registered: bool = False
 _DOWNLOAD_DIR_MARKER = ".vision_ai_recaptcha_solver_owned"
 
 
-def _cleanup_all_solvers() -> None:
-    """Cleanup all active solver instances."""
-    for solver in list(_active_solvers):
-        with contextlib.suppress(Exception):
-            solver.close()
+class AsyncRecaptchaSolver:
+    """Asynchronous reCAPTCHA solver using YOLO object detection.
 
-
-def _signal_handler(signum: int, frame: Any) -> None:
-    """Handle interrupt signals by cleaning up browsers before exit."""
-    _cleanup_all_solvers()
-    # Re-raise the signal with original handler or exit
-    if signum == signal.SIGINT and _original_sigint_handler:
-        if callable(_original_sigint_handler):
-            _original_sigint_handler(signum, frame)
-        else:
-            sys.exit(130)
-    elif signum == signal.SIGTERM and _original_sigterm_handler:
-        if callable(_original_sigterm_handler):
-            _original_sigterm_handler(signum, frame)
-        else:
-            sys.exit(143)
-    else:
-        sys.exit(128 + signum)
-
-
-def _register_cleanup_handlers(register_signal_handlers: bool = True) -> None:
-    """Register signal handlers and atexit for cleanup.
-
-    Args:
-        register_signal_handlers: Whether to register signal handlers for SIGINT/SIGTERM.
-            Set to False if your application needs to manage its own signal handlers.
-            atexit handler is always registered regardless of this setting.
-    """
-    global _cleanup_registered, _original_sigint_handler, _original_sigterm_handler
-    if _cleanup_registered:
-        return
-    _cleanup_registered = True
-
-    atexit.register(_cleanup_all_solvers)
-
-    # Only register signal handlers if requested
-    if not register_signal_handlers:
-        return
-
-    # Register original signal handlers
-    _original_sigint_handler = signal.getsignal(signal.SIGINT)
-    signal.signal(signal.SIGINT, _signal_handler)
-
-    # SIGTERM may not exist on Windows
-    if hasattr(signal, "SIGTERM"):
-        _original_sigterm_handler = signal.getsignal(signal.SIGTERM)
-        signal.signal(signal.SIGTERM, _signal_handler)
-
-
-class RecaptchaSolver:
-    """Synchronous reCAPTCHA solver using YOLO object detection.
-
-    This class provides a high-level interface for solving reCAPTCHA challenges
-    by combining the recaptcha_domain_replicator library for browser handling with
-    YOLO based image detection for solving the visual challenges.
+    This class provides an async interface for solving reCAPTCHA challenges.
+    Browser operations run in a thread pool to avoid blocking the event loop.
 
     Example:
         ```python
-        from vision_ai_recaptcha_solver import RecaptchaSolver, SolverConfig
+        import asyncio
+        from vision_ai_recaptcha_solver import AsyncRecaptchaSolver, SolverConfig
 
-        config = SolverConfig(headless=False, timeout=120)
+        async def main():
+            config = SolverConfig(timeout=120)
 
-        with RecaptchaSolver(config) as solver:
-            result = solver.solve(
-                website_key="6Le-wvkSAAAAAPBMRTvw0Q4Muexq9bi0DJwx_mJ-",
-                website_url="https://www.google.com/recaptcha/api2/demo"
-            )
-            print(f"Token: {result.token}")
+            async with AsyncRecaptchaSolver(config) as solver:
+                result = await solver.solve(
+                    website_key="6Le-wvkSAAAAAPBMRTvw0Q4Muexq9bi0DJwx_mJ-",
+                    website_url="https://www.google.com/recaptcha/api2/demo"
+                )
+                print(f"Token: {result.token}")
+
+        asyncio.run(main())
         ```
     """
 
     def __init__(self, config: SolverConfig | None = None) -> None:
-        """Initialize the RecaptchaSolver.
+        """Initialize the AsyncRecaptchaSolver.
 
         Args:
             config: Solver configuration. If None, uses default configuration.
@@ -142,36 +81,13 @@ class RecaptchaSolver:
         self.config = config or SolverConfig()
         self.logger = setup_logging(self.config.log_level, "vision_ai_recaptcha_solver")
         reserve_solver_resources(self, self.config, self.logger)
+        self._closed: bool = False
+        self._executor: ThreadPoolExecutor | None = None
+        self._detector: YOLODetector | None = None
+        self._handlers: dict[CaptchaType, BaseCaptchaHandler] | None = None
+        self._replicator: Any = None
         self._owns_download_dir: bool = False
         self._init_download_dir()
-
-        # Initialize detector with both classification and detection models
-        self._detector = YOLODetector(
-            model_path=self.config.model_path,
-            detection_model_path=self.config.detection_model_path,
-            verbose=self.config.verbose,
-            logger=self.logger,
-            conf_threshold=self.config.conf_threshold,
-            fourth_cell_threshold=self.config.fourth_cell_threshold,
-            detection_conf_threshold=self.config.detection_conf_threshold,
-        )
-
-        # Initialize handlers
-        self._handlers: dict[CaptchaType, BaseCaptchaHandler] = {
-            CaptchaType.DYNAMIC_3X3: DynamicCaptchaHandler(
-                self._detector, self.config, self.logger
-            ),
-            CaptchaType.SELECTION_3X3: SelectionCaptchaHandler(
-                self._detector, self.config, self.logger
-            ),
-            CaptchaType.SQUARE_4X4: SquareCaptchaHandler(self._detector, self.config, self.logger),
-        }
-
-        self._replicator: RecaptchaDomainReplicator | None = None
-        self._closed: bool = False
-
-        _active_solvers.add(self)
-        _register_cleanup_handlers(register_signal_handlers=self.config.register_signal_handlers)
 
     def _init_download_dir(self) -> None:
         """Ensure download_dir exists and mark ownership if created by solver."""
@@ -198,39 +114,42 @@ class RecaptchaSolver:
             except OSError as e:
                 self.logger.debug("Failed to create download dir marker '%s': %s", marker_path, e)
 
-    def __enter__(self) -> RecaptchaSolver:
-        """Enter context manager."""
+    async def __aenter__(self) -> AsyncRecaptchaSolver:
+        """Enter async context manager."""
         return self
 
-    def __exit__(
+    async def __aexit__(
         self,
         exc_type: type[BaseException] | None,
         exc_val: BaseException | None,
         exc_tb: Any,
     ) -> None:
-        """Exit context manager and cleanup resources."""
-        self.close()
+        """Exit async context manager and cleanup resources."""
+        await self.close()
 
-    def close(self) -> None:
-        """Close the solver and cleanup all resources."""
+    async def close(self) -> None:
+        """Close the async solver and cleanup resources."""
         if self._closed:
             return
         self._closed = True
 
-        # Remove from active solvers registry
-        _active_solvers.discard(self)
-
-        # Cleanup replicator resources
-        self._cleanup_replicator()
+        # Cleanup replicator in thread pool
+        if self._replicator:
+            await self._run_in_executor(self._cleanup_replicator_sync)
 
         # Cleanup temporary directory
         if self.config.cleanup_tmp_on_close:
-            self._cleanup_tmp_directory()
+            await self._run_in_executor(self._cleanup_tmp_directory_sync)
+
+        # Shutdown executor
+        if self._executor:
+            self._executor.shutdown(wait=True, cancel_futures=True)
+            self._executor = None
 
         release_solver_resources(self)
 
-    def _cleanup_replicator(self) -> None:
-        """Cleanup the current replicator instance."""
+    def _cleanup_replicator_sync(self) -> None:
+        """Synchronously cleanup the replicator."""
         if self._replicator:
             try:
                 self._replicator.close_browser()
@@ -240,10 +159,9 @@ class RecaptchaSolver:
                 self._replicator.stop_http_server()
             except Exception as e:
                 self.logger.debug(f"Error stopping server: {e}")
-            finally:
-                self._replicator = None
+            self._replicator = None
 
-    def _cleanup_tmp_directory(self) -> None:
+    def _cleanup_tmp_directory_sync(self) -> None:
         """Cleanup the temporary download directory."""
         if not self._owns_download_dir:
             self.logger.debug(
@@ -258,7 +176,41 @@ class RecaptchaSolver:
         except Exception as e:
             self.logger.debug(f"Error cleaning up temporary directory: {e}")
 
-    def solve(
+    def _get_executor(self) -> ThreadPoolExecutor:
+        """Get or create the thread pool executor."""
+        if self._executor is None:
+            self._executor = ThreadPoolExecutor(max_workers=10, thread_name_prefix="async_solver")
+        return self._executor
+
+    async def _run_in_executor(self, func: Any, *args: Any) -> Any:
+        """Run a synchronous function in the thread pool executor."""
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(self._get_executor(), partial(func, *args))
+
+    def _init_detector_and_handlers(self) -> None:
+        """Initialize detector and handlers (sync, runs in thread pool)."""
+        self._detector = YOLODetector(
+            model_path=self.config.model_path,
+            detection_model_path=self.config.detection_model_path,
+            verbose=self.config.verbose,
+            logger=self.logger,
+            conf_threshold=self.config.conf_threshold,
+            fourth_cell_threshold=self.config.fourth_cell_threshold,
+            detection_conf_threshold=self.config.detection_conf_threshold,
+        )
+
+        # Initialize handlers
+        self._handlers = {
+            CaptchaType.DYNAMIC_3X3: DynamicCaptchaHandler(
+                self._detector, self.config, self.logger
+            ),
+            CaptchaType.SELECTION_3X3: SelectionCaptchaHandler(
+                self._detector, self.config, self.logger
+            ),
+            CaptchaType.SQUARE_4X4: SquareCaptchaHandler(self._detector, self.config, self.logger),
+        }
+
+    async def solve(
         self,
         website_key: str,
         website_url: str,
@@ -272,7 +224,7 @@ class RecaptchaSolver:
         cookies: list[dict[str, Any]] | None = None,
         user_agent: str | None = None,
     ) -> SolveResult:
-        """Solve a reCAPTCHA challenge.
+        """Asynchronously solve a reCAPTCHA challenge.
 
         Args:
             website_key: The reCAPTCHA site key.
@@ -290,10 +242,10 @@ class RecaptchaSolver:
             SolveResult with token, cookies, and timing information.
 
         Raises:
-            RecaptchaSolverError: If solving fails.
+            RecaptchaSolverError: If solving fails or solver is closed.
             TokenExtractionError: If token cannot be extracted.
-            ValueError: If website_key or website_url are invalid.
         """
+        # Validate inputs
         if not website_key or not website_key.strip():
             raise ValueError("website_key cannot be empty")
         if not website_url or not website_url.strip():
@@ -311,31 +263,26 @@ class RecaptchaSolver:
         last_captcha_type = CaptchaType.UNKNOWN
 
         try:
-            self._cleanup_replicator()
+            if self._detector is None:
+                await self._run_in_executor(self._init_detector_and_handlers)
 
-            # Initialize new replicator
-            self._replicator = RecaptchaDomainReplicator(
-                download_dir=str(self.config.download_dir),
-                server_port=self.config.server_port,
-                persist_html=self.config.persist_html,
-                proxy=self.config.proxy,
-                browser_path=self.config.browser_path,
-            )
+            # Cleanup previous replicator
+            if self._replicator:
+                await self._run_in_executor(self._cleanup_replicator_sync)
 
-            # Replicate captcha
-            cookies_payload: Any = cookies
-            browser, token_handle = self._replicator.replicate_captcha(
-                website_key=website_key,
-                website_url=website_url,
-                is_invisible=is_invisible,
-                action=action,
-                is_enterprise=is_enterprise,
-                api_domain=api_domain,
-                bypass_domain_check=bypass_domain_check,
-                use_ssl=use_ssl,
-                cookies=cookies_payload,
-                user_agent=user_agent,
-                headless=self.config.headless,
+            # Initialize browser
+            browser, token_handle = await self._run_in_executor(
+                self._init_browser,
+                website_key,
+                website_url,
+                is_invisible,
+                action,
+                is_enterprise,
+                api_domain,
+                bypass_domain_check,
+                use_ssl,
+                cookies,
+                user_agent,
             )
 
             if not browser:
@@ -346,13 +293,14 @@ class RecaptchaSolver:
                 self.logger.info("Invisible reCAPTCHA (v3) detected - waiting for token...")
                 last_captcha_type = CaptchaType.INVISIBLE
 
-                # Wait for the token
-                token = token_handle.wait(timeout=self.config.timeout) if token_handle else None
+                token = await self._run_in_executor(
+                    lambda: token_handle.wait(timeout=self.config.timeout) if token_handle else None
+                )
 
                 if not token:
                     raise TokenExtractionError("Failed to extract reCAPTCHA v3 token")
 
-                result_cookies = self._get_cookies(browser)
+                result_cookies = await self._run_in_executor(self._get_cookies, browser)
                 time_taken = round(time.time() - start_time, 2)
 
                 self.logger.info("reCAPTCHA token obtained successfully!")
@@ -364,32 +312,30 @@ class RecaptchaSolver:
                     attempts=0,
                 )
 
-            # reCAPTCHA v2 - need to solve the image challenge
-            # Wait a moment for page to load
-            human_delay(mean=0.8, sigma=0.2)
+            await self._run_in_executor(human_delay, 0.8, 0.2)
 
             # Click checkbox to trigger the challenge
             try:
-                click_checkbox(browser)
+                await self._run_in_executor(click_checkbox, browser)
             except ElementNotFoundError as e:
                 raise CaptchaNotFoundError(f"Could not find captcha checkbox: {e}") from e
 
-            # Wait for challenge to appear or for immediate solve
-            human_delay(mean=0.5, sigma=0.3)
+            await self._run_in_executor(human_delay, 0.5, 0.3)
 
             # Check if captcha was solved immediately
-            if is_solved(browser, timeout=2):
+            if await self._run_in_executor(is_solved, browser, 2):
                 self.logger.info("Captcha solved immediately on checkbox click (no challenge)")
 
-                # Wait for the token
-                token = token_handle.wait(timeout=self.config.timeout) if token_handle else None
+                token = await self._run_in_executor(
+                    lambda: token_handle.wait(timeout=self.config.timeout) if token_handle else None
+                )
 
                 if not token:
                     raise TokenExtractionError(
                         "Failed to extract reCAPTCHA token after immediate solve"
                     )
 
-                result_cookies = self._get_cookies(browser)
+                result_cookies = await self._run_in_executor(self._get_cookies, browser)
                 time_taken = round(time.time() - start_time, 2)
 
                 return SolveResult(
@@ -401,7 +347,8 @@ class RecaptchaSolver:
                 )
 
             # Ensure model warmup is complete before detection
-            self._detector.ensure_warmup_complete()
+            assert self._detector is not None
+            await self._run_in_executor(self._detector.ensure_warmup_complete)
 
             # Solve loop
             while attempts < self.config.max_attempts:
@@ -410,88 +357,114 @@ class RecaptchaSolver:
 
                 try:
                     # Determine captcha type and get target
-                    captcha_type = self._determine_captcha_type(browser)
+                    captcha_type = await self._run_in_executor(
+                        self._determine_captcha_type, browser
+                    )
                     last_captcha_type = captcha_type
-                    target_class = self._get_target_class(browser)
+                    target_class = await self._run_in_executor(self._get_target_class, browser)
 
                     if target_class is None:
                         self.logger.info("Unknown target, reloading captcha")
-                        click_reload_button(browser)
-                        human_delay(
-                            mean=self.config.human_delay_mean,
-                            sigma=self.config.human_delay_sigma,
+                        await self._run_in_executor(click_reload_button, browser)
+                        await self._run_in_executor(
+                            human_delay,
+                            self.config.human_delay_mean,
+                            self.config.human_delay_sigma,
                         )
                         # Get new challenge
-                        challenge_frame = get_challenge_iframe(
-                            browser, timeout=self.config.default_timeout
+                        challenge_frame = await self._run_in_executor(
+                            get_challenge_iframe,
+                            browser,
+                            self.config.default_timeout,
                         )
                         if challenge_frame:
-                            challenge_frame.ele(
-                                "#rc-imageselect-target td",
-                                timeout=self.config.default_timeout,
+                            await self._run_in_executor(
+                                lambda cf: cf.ele(
+                                    "#rc-imageselect-target td",
+                                    timeout=self.config.default_timeout,
+                                ),
+                                challenge_frame,
                             )
                         continue
 
                     # Get handler and solve
                     handler = self._get_handler(captcha_type)
-                    clicked_cells = handler.solve(browser, target_class)
+                    clicked_cells = await self._run_in_executor(
+                        handler.solve, browser, target_class
+                    )
 
                     if not clicked_cells:
                         self.logger.info("No cells clicked, reloading")
-                        click_reload_button(browser)
-                        human_delay(
-                            mean=self.config.human_delay_mean,
-                            sigma=self.config.human_delay_sigma,
+                        await self._run_in_executor(click_reload_button, browser)
+                        await self._run_in_executor(
+                            human_delay,
+                            self.config.human_delay_mean,
+                            self.config.human_delay_sigma,
                         )
-                        challenge_frame = get_challenge_iframe(
-                            browser, timeout=self.config.default_timeout
+                        challenge_frame = await self._run_in_executor(
+                            get_challenge_iframe,
+                            browser,
+                            self.config.default_timeout,
                         )
                         if challenge_frame:
-                            challenge_frame.ele(
-                                "#rc-imageselect-target td",
-                                timeout=self.config.default_timeout,
+                            await self._run_in_executor(
+                                lambda cf: cf.ele(
+                                    "#rc-imageselect-target td",
+                                    timeout=self.config.default_timeout,
+                                ),
+                                challenge_frame,
                             )
                         continue
 
                     # Click verify
-                    human_delay(mean=0.3, sigma=0.2)
-                    click_verify_button(browser)
+                    await self._run_in_executor(human_delay, 0.3, 0.2)
+                    await self._run_in_executor(click_verify_button, browser)
 
-                    # Wait for verify result (waits until button is not disabled)
-                    if wait_for_verify_result(browser, timeout=self.config.default_timeout):
+                    # Wait for verify result
+                    if await self._run_in_executor(
+                        wait_for_verify_result, browser, self.config.default_timeout
+                    ):
                         self.logger.info("Captcha solved successfully!")
                         break
 
                     # Not solved, continue to next attempt
-                    human_delay(mean=0.2, sigma=0.1)
+                    await self._run_in_executor(human_delay, 0.2, 0.1)
 
                 except LowConfidenceError as e:
                     self.logger.info(f"Low confidence detection, reloading: {e}")
-                    click_reload_button(browser)
-                    human_delay(
-                        mean=self.config.human_delay_mean,
-                        sigma=self.config.human_delay_sigma,
+                    await self._run_in_executor(click_reload_button, browser)
+                    await self._run_in_executor(
+                        human_delay,
+                        self.config.human_delay_mean,
+                        self.config.human_delay_sigma,
                     )
-                    challenge_frame = get_challenge_iframe(
-                        browser, timeout=self.config.default_timeout
+                    challenge_frame = await self._run_in_executor(
+                        get_challenge_iframe,
+                        browser,
+                        self.config.default_timeout,
                     )
                     if challenge_frame:
-                        challenge_frame.ele(
-                            "#rc-imageselect-target td",
-                            timeout=self.config.default_timeout,
+                        await self._run_in_executor(
+                            lambda cf: cf.ele(
+                                "#rc-imageselect-target td",
+                                timeout=self.config.default_timeout,
+                            ),
+                            challenge_frame,
                         )
 
                 except (ElementNotFoundError, UnsupportedCaptchaError) as e:
                     self.logger.warning(f"Attempt {attempts} failed: {e}")
-                    human_delay(mean=0.5, sigma=0.1)
+                    await self._run_in_executor(human_delay, 0.5, 0.1)
 
             # Extract token
-            token = token_handle.wait(timeout=self.config.timeout) if token_handle else None
+            token = await self._run_in_executor(
+                lambda: token_handle.wait(timeout=self.config.timeout) if token_handle else None
+            )
 
             if not token:
                 raise TokenExtractionError("Failed to extract reCAPTCHA token")
 
-            result_cookies = self._get_cookies(browser)
+            result_cookies = await self._run_in_executor(self._get_cookies, browser)
             time_taken = round(time.time() - start_time, 2)
 
             return SolveResult(
@@ -507,67 +480,77 @@ class RecaptchaSolver:
         except (RuntimeError, OSError, ValueError) as e:
             raise RecaptchaSolverError(f"Solve failed: {e}") from e
 
+    def _init_browser(
+        self,
+        website_key: str,
+        website_url: str,
+        is_invisible: bool,
+        action: str | None,
+        is_enterprise: bool,
+        api_domain: str,
+        bypass_domain_check: bool,
+        use_ssl: bool,
+        cookies: list[dict[str, Any]] | None,
+        user_agent: str | None,
+    ) -> tuple[Any, Any]:
+        """Initialize browser and replicate captcha."""
+        from recaptcha_domain_replicator import RecaptchaDomainReplicator
+
+        self._replicator = RecaptchaDomainReplicator(
+            download_dir=str(self.config.download_dir),
+            server_port=self.config.server_port,
+            persist_html=self.config.persist_html,
+            proxy=self.config.proxy,
+            browser_path=self.config.browser_path,
+        )
+
+        browser, token_handle = self._replicator.replicate_captcha(
+            website_key=website_key,
+            website_url=website_url,
+            is_invisible=is_invisible,
+            action=action,
+            is_enterprise=is_enterprise,
+            api_domain=api_domain,
+            bypass_domain_check=bypass_domain_check,
+            use_ssl=use_ssl,
+            cookies=cookies,
+            user_agent=user_agent,
+            headless=self.config.headless,
+        )
+
+        return browser, token_handle
+
     def _determine_captcha_type(self, browser: Any) -> CaptchaType:
-        """Determine the type of captcha challenge.
-
-        Args:
-            browser: Browser instance.
-
-        Returns:
-            CaptchaType enum value.
-        """
+        """Determine the type of captcha challenge."""
         title = get_challenge_title(browser)
         title_lower = title.lower()
 
         if "squares" in title_lower:
             return CaptchaType.SQUARE_4X4
         elif "none" in title_lower:
-            # "Click skip if there are none" indicates dynamic
             return CaptchaType.DYNAMIC_3X3
         else:
             return CaptchaType.SELECTION_3X3
 
     def _get_target_class(self, browser: Any) -> int | None:
-        """Get the YOLO class index for the target object.
-
-        Args:
-            browser: Browser instance.
-
-        Returns:
-            YOLO class index, or None if target is unknown.
-        """
+        """Get the YOLO class index for the target object."""
         keyword = get_target_keyword(browser)
-        if not keyword:
+        if not keyword or self._detector is None:
             return None
-
         return self._detector.get_target_class(keyword)
 
     def _get_handler(self, captcha_type: CaptchaType) -> BaseCaptchaHandler:
-        """Get the appropriate handler for a captcha type.
+        """Get the appropriate handler for a captcha type."""
+        if self._handlers is None:
+            raise RecaptchaSolverError("Handlers not initialized")
 
-        Args:
-            captcha_type: Type of captcha.
-
-        Returns:
-            Handler instance.
-
-        Raises:
-            UnsupportedCaptchaError: If captcha type is not supported.
-        """
         handler = self._handlers.get(captcha_type)
         if not handler:
             raise UnsupportedCaptchaError(f"Unsupported captcha type: {captcha_type}")
         return handler
 
     def _get_cookies(self, browser: Any) -> list[dict[str, Any]]:
-        """Get cookies from the browser.
-
-        Args:
-            browser: DrissionPage browser instance.
-
-        Returns:
-            List of cookie dictionaries.
-        """
+        """Get cookies from the browser."""
         try:
             if hasattr(browser, "cookies"):
                 cookies = browser.cookies(all_info=True)

@@ -22,9 +22,6 @@ if str(Path(__file__).resolve().parent) not in sys.path:
 
 from selenium import webdriver
 
-from recaptchav2_engine import solve_recaptcha_v2
-from ai_utils import ask_recaptcha_instructions_with_provider
-from main import check_tile_for_object
 
 
 DEFAULT_DEMO_URL = 'https://2captcha.com/demo/recaptcha-v2'
@@ -117,6 +114,49 @@ def rank_grid_tiles_with_gemini(grid_path, object_name, cols):
         selected = []
     return [(cell, 1.0 if cell in selected else 0.0) for cell in range(1, max_cell + 1)]
 
+
+
+
+def run_official_solver(payload, request_id, screenshots_dir, proxy, user_agent, page_url, max_rounds):
+    """Run DannyLuna official core in the heavy runtime venv."""
+    runner = Path(__file__).with_name('dannyluna_official_runner.py')
+    python_bin = os.getenv('DANNYLUNA_SOLVER_PYTHON', '/mnt/visionai-ref-runtime/venv/bin/python')
+    timeout = int(float(payload.get('timeout') or os.getenv('RECAPTCHAV2_TOKEN_TIMEOUT', '700'))) + 120
+    server_port_base = int(os.getenv('RECAPTCHAV2_REPLICATOR_PORT_BASE', '8462'))
+    outbound = dict(payload)
+    outbound.update({
+        'requestId': request_id,
+        'debugDir': screenshots_dir,
+        'pageUrl': page_url,
+        'proxy': proxy or '',
+        'userAgent': user_agent or '',
+        'maxRounds': max_rounds,
+        'serverPort': int(payload.get('serverPort') or (server_port_base + (abs(hash(request_id)) % 500))),
+        'useSsl': payload.get('useSsl', False),
+    })
+    env = os.environ.copy()
+    src_root = str(PROJECT_ROOT / 'src')
+    env['PYTHONPATH'] = src_root + (os.pathsep + env['PYTHONPATH'] if env.get('PYTHONPATH') else '')
+    proc = subprocess.run(
+        [python_bin, str(runner)],
+        input=json.dumps(outbound),
+        text=True,
+        capture_output=True,
+        timeout=timeout,
+        env=env,
+    )
+    text = (proc.stdout or '').strip().splitlines()[-1] if proc.stdout else '{}'
+    try:
+        result = json.loads(text)
+    except Exception:
+        result = {'status': 'error', 'verified': False, 'stage': 'bad_json', 'message': text[:1000]}
+    result['backend'] = 'official'
+    result['returnCode'] = proc.returncode
+    if proc.stderr:
+        result['stderrTail'] = proc.stderr[-2000:]
+    if proc.returncode not in (0, 2) and result.get('status') != 'success':
+        result.setdefault('message', f'official solver exited {proc.returncode}')
+    return result
 
 def select_proxy(payload):
     if payload.get('noProxy') is True:
@@ -218,7 +258,6 @@ class Handler(BaseHTTPRequestHandler):
         try:
             proxy = select_proxy(payload)
             user_agent = payload.get('userAgent') or payload.get('ua') or ''
-            driver, profile_dir = make_driver(proxy=proxy, user_agent=user_agent)
             provider = payload.get('provider') or 'gemini-cli'
             model = payload.get('model')
             instruction_provider = payload.get('instructionProvider') or provider
@@ -229,27 +268,37 @@ class Handler(BaseHTTPRequestHandler):
             request_id = payload.get('requestId') or f"run_{int(datetime.utcnow().timestamp())}"
             screenshots_dir = str(DEBUG_DIR / request_id)
             os.makedirs(screenshots_dir, exist_ok=True)
-            cookie_count = preseed_cookies(driver, payload.get('cookies') or [], page_url)
 
-            def ask_instruction(image_path, _provider, _model):
-                return ask_recaptcha_instructions_with_provider(image_path, instruction_provider, instruction_model)
+            backend = (payload.get('backend') or os.getenv('RECAPTCHAV2_BACKEND', 'official')).lower()
+            cookie_count = 0
+            if backend in ('official', 'dannyluna', 'visionai'):
+                result = run_official_solver(payload, request_id, screenshots_dir, proxy, user_agent, page_url, max_rounds)
+            else:
+                from recaptchav2_engine import solve_recaptcha_v2
+                from ai_utils import ask_recaptcha_instructions_with_provider
+                from main import check_tile_for_object
 
-            rank_grid_tiles = rank_grid_tiles_with_gemini if provider == 'gemini-cli-grid' else None
+                def ask_instruction(image_path, _provider, _model):
+                    return ask_recaptcha_instructions_with_provider(image_path, instruction_provider, instruction_model)
 
-            result = solve_recaptcha_v2(
-                driver=driver,
-                provider=provider,
-                model=model,
-                max_rounds=max_rounds,
-                screenshots_dir=screenshots_dir,
-                ask_recaptcha_instructions_with_provider=ask_instruction,
-                check_tile_for_object=check_tile_for_object,
-                rank_grid_tiles=rank_grid_tiles,
-                debug=debug,
-                page_url=page_url,
-                preJavaScript=payload.get('preJavaScript') or payload.get('pre_javascript'),
-                preJavaScriptWait=payload.get('preJavaScriptWait') or payload.get('pre_javascript_wait'),
-            )
+                rank_grid_tiles = rank_grid_tiles_with_gemini if provider == 'gemini-cli-grid' else None
+                driver, profile_dir = make_driver(proxy=proxy, user_agent=user_agent)
+                cookie_count = preseed_cookies(driver, payload.get('cookies') or [], page_url)
+                result = solve_recaptcha_v2(
+                    driver=driver,
+                    provider=provider,
+                    model=model,
+                    max_rounds=max_rounds,
+                    screenshots_dir=screenshots_dir,
+                    ask_recaptcha_instructions_with_provider=ask_instruction,
+                    check_tile_for_object=check_tile_for_object,
+                    rank_grid_tiles=rank_grid_tiles,
+                    debug=debug,
+                    page_url=page_url,
+                    preJavaScript=payload.get('preJavaScript') or payload.get('pre_javascript'),
+                    preJavaScriptWait=payload.get('preJavaScriptWait') or payload.get('pre_javascript_wait'),
+                )
+                result['backend'] = 'legacy'
             result['requestId'] = request_id
             result['pageUrl'] = page_url
             result['proxy'] = proxy or ''

@@ -37,3 +37,10 @@ Date: 2026-05-05
 - Coinadster renders the login reCAPTCHA inside hidden modal `#slogi22Mo2dal`; open the modal before clicking the checkbox.
 - For `gemini-cli-grid`, full-grid ranking was more reliable than the secondary per-tile confirmation pass on dynamic grids. Trusting ranked top-level selections produced a real verified token in the Coinadster flow.
 - A valid reCAPTCHA token alone is not enough: Coinadster can still reject login with `Session expired` if the hidden page token/PHP session state no longer matches.
+
+## DannyLuna migration lesson
+
+- The custom Selenium/Gemini-grid solver was not reliable enough for Coinadster.
+- DannyLuna official `VisionAIRecaptchaSolver` with `recaptcha-domain-replicator`, DrissionPage, Ultralytics/YOLO, and model `yolo12x.pt` solved Coinadster reCAPTCHA and produced valid tokens.
+- Heavy dependencies should live in `/mnt/visionai-ref-runtime` on this VPS; root disk is too small for repeated YOLO/OpenCV installs.
+- Do not pass Coinadster PHP/Cloudflare cookies into the official solver by default. For Coinadster the robust login lane is to solve in the replica, then create a fresh target session and submit with a fresh hidden token.

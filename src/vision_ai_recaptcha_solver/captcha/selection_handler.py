@@ -1,83 +1,86 @@
+"""Handler for one-time selection 3x3 captchas."""
+
 from __future__ import annotations
 
-from io import BytesIO
-from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-import requests
-from PIL import Image
+from vision_ai_recaptcha_solver.captcha.base_handler import BaseCaptchaHandler
+from vision_ai_recaptcha_solver.exceptions import LowConfidenceError
+from vision_ai_recaptcha_solver.types import CaptchaType
 
-from .base_handler import BaseCaptchaHandler
+if TYPE_CHECKING:
+    pass
 
 
 class SelectionCaptchaHandler(BaseCaptchaHandler):
-    captcha_type = 'selection_3x3'
+    """Handler for 3x3 one-time selection captchas.
 
-    def solve(self, **kwargs: Any):
-        result = kwargs['result']
-        round_no = kwargs['round_no']
-        driver = kwargs['driver']
-        provider = kwargs['provider']
-        model = kwargs.get('model')
-        object_name = kwargs['object_name']
-        screenshots_dir = kwargs['screenshots_dir']
-        current_urls = kwargs['current_urls']
-        append_trace = kwargs['append_trace']
-        check_tile_for_object = kwargs['check_tile_for_object']
-        visionai_rank_grid_tiles = kwargs.get('visionai_rank_grid_tiles')
+    In selection captchas, the user selects all matching images at once
+    and then verifies.
+    """
 
-        table = kwargs['table']
-        adapter = kwargs['adapter']
-        all_tiles = adapter.get_table_tiles(table)
-        grid_path = f'{screenshots_dir}/recaptcha_grid_{round_no}.png'
-        adapter.capture_element(table, grid_path)
-        result.artifacts.append(grid_path)
-        grid_img = Image.open(grid_path).convert('RGB')
-        grid_width, grid_height = grid_img.size
-        tile_count = len(all_tiles)
-        cols = 4 if tile_count == 16 else 3
-        rows = max(1, (tile_count + cols - 1) // cols)
-        tile_w = grid_width // cols
-        tile_h = grid_height // rows
-        selected_tiles: list[int] = []
-        append_trace(result, round=round_no, note=f'selection entry provider={provider} cols={cols} tiles={tile_count} visionai_fn={visionai_rank_grid_tiles is not None}')
+    captcha_type = CaptchaType.SELECTION_3X3
 
-        if provider in ('visionai-local', 'gemini-cli-grid') and visionai_rank_grid_tiles is not None:
-            raw_ranked = visionai_rank_grid_tiles(grid_path, object_name, cols)
-            append_trace(result, round=round_no, note=f'visionai raw ranked={raw_ranked}')
-            ranked = sorted(raw_ranked, key=lambda x: x[1], reverse=True)
-            for cell_num, confidence in ranked:
-                append_trace(result, round=round_no, note=f'visionai tile {cell_num - 1} conf={confidence:.4f}')
-            if cols == 4:
-                selected_tiles = [cell_num - 1 for cell_num, confidence in ranked if confidence >= 0.7]
-                append_trace(result, round=round_no, note=f'visionai 4x4 selected={selected_tiles}')
-            else:
-                top3 = ranked[:3]
-                append_trace(result, round=round_no, note=f'visionai top3={top3}')
-                if len(top3) >= 3 and all(conf >= 0.2 for _, conf in top3):
-                    selected_tiles = [cell_num - 1 for cell_num, _ in top3]
-                    if len(ranked) >= 4 and ranked[3][1] >= 0.7:
-                        selected_tiles.append(ranked[3][0] - 1)
-                    append_trace(result, round=round_no, note=f'visionai 3x3 selected={selected_tiles}')
-                else:
-                    backup = [(cell_num - 1, conf) for cell_num, conf in ranked if conf >= 0.08]
-                    backup.sort(key=lambda x: x[1], reverse=True)
-                    selected_tiles = [idx for idx, _ in backup[:max(1, min(3, len(backup)))]]
-                    append_trace(result, round=round_no, note=f'selection fallback used backup={backup} selected={selected_tiles}')
+    def solve(self, browser: Any, target_class: int) -> list[int]:
+        """Solve a selection 3x3 captcha.
 
-        if not selected_tiles:
-            for i in range(tile_count):
-                tile_path = f'{screenshots_dir}/tile_{round_no}_{i}.png'
-                row = i // cols
-                col = i % cols
-                left = col * tile_w
-                top = row * tile_h
-                right = (col + 1) * tile_w if col < cols - 1 else grid_width
-                bottom = (row + 1) * tile_h if row < rows - 1 else grid_height
-                grid_img.crop((left, top, right, bottom)).save(tile_path)
-                result.artifacts.append(tile_path)
-                _idx, should_click = check_tile_for_object((i, tile_path, object_name, provider, model))
-                if should_click:
-                    selected_tiles.append(i)
+        Uses ranking based selection, always click top 3 cells by target confidence,
+        plus a 4th cell if its confidence >= fourth_cell_threshold.
 
-        return sorted(set(selected_tiles))
+        If any of the top 3 cells has confidence below min_confidence_threshold,
+        raises LowConfidenceError to trigger a reload.
+
+        Args:
+            browser: Browser instance from recaptcha_domain_replicator.
+            target_class: YOLO class index of the target object.
+
+        Returns:
+            List of cells that were clicked.
+
+        Raises:
+            LowConfidenceError: If any top 3 cell has confidence below minimum threshold.
+        """
+        img_urls = self.get_image_urls(browser)
+        if not img_urls:
+            self.logger.warning("No captcha images found")
+            return []
+
+        unique_urls = list(dict.fromkeys(img_urls))
+        self.logger.debug(f"Found {len(img_urls)} image URLs, {len(unique_urls)} unique")
+
+        # Download the combined 3x3 grid image
+        _, main_image = self.download_main_image(unique_urls[0])
+
+        # Get all cells with their target confidences
+        cell_confidences = self.detector.classify_tiles_with_confidence(
+            main_image, grid_size=3, target_class=target_class
+        )
+
+        # Rank by confidence
+        ranked = sorted(cell_confidences, key=lambda x: x[1], reverse=True)
+
+        # Check minimum confidence threshold for top 3 cells
+        min_threshold = self.config.min_confidence_threshold
+        for i, (cell, conf) in enumerate(ranked[:3]):
+            if conf < min_threshold:
+                self.logger.info(
+                    f"Cell {cell} (rank {i + 1}) has confidence {conf:.2f} "
+                    f"below minimum threshold {min_threshold:.2f}"
+                )
+                raise LowConfidenceError(
+                    f"Top cell confidence {conf:.2f} is below minimum {min_threshold:.2f}"
+                )
+
+        # Always select top 3
+        answers = [cell for cell, _ in ranked[:3]]
+
+        # Add 4th cell if confidence >= fourth_cell_threshold
+        if len(ranked) >= 4:
+            fourth_cell, fourth_conf = ranked[3]
+            if fourth_conf >= self.config.fourth_cell_threshold:
+                answers.append(fourth_cell)
+                self.logger.debug(f"Including 4th cell {fourth_cell} with conf {fourth_conf:.2f}")
+
+        self.click_cells(browser, answers)
+        self.human_delay(0.3, 0.2)
+        return answers

@@ -1,96 +1,84 @@
+"""Handler for 4x4 square captchas using YOLO detection."""
+
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from PIL import Image
+from vision_ai_recaptcha_solver.browser.navigation import get_target_keyword
+from vision_ai_recaptcha_solver.captcha.base_handler import BaseCaptchaHandler
+from vision_ai_recaptcha_solver.types import CaptchaType
 
-from .base_handler import BaseCaptchaHandler
+if TYPE_CHECKING:
+    pass
 
 
 class SquareCaptchaHandler(BaseCaptchaHandler):
-    captcha_type = 'square_4x4'
+    """Handler for 4x4 square captchas using object detection.
 
-    def solve(self, **kwargs: Any):
-        result = kwargs['result']
-        round_no = kwargs['round_no']
-        provider = kwargs['provider']
-        model = kwargs.get('model')
-        object_name = kwargs['object_name']
-        screenshots_dir = kwargs['screenshots_dir']
-        append_trace = kwargs['append_trace']
-        check_tile_for_object = kwargs['check_tile_for_object']
-        visionai_rank_grid_tiles = kwargs.get('visionai_rank_grid_tiles')
+    Uses YOLO detection model to detect all instances of the target object
+    across the full captcha image, then selects all grid cells that contain
+    the detected objects.
+    """
 
-        table = kwargs['table']
-        adapter = kwargs['adapter']
-        all_tiles = adapter.get_table_tiles(table)
-        grid_path = f'{screenshots_dir}/recaptcha_grid_{round_no}.png'
-        adapter.capture_element(table, grid_path)
-        result.artifacts.append(grid_path)
-        grid_img = Image.open(grid_path).convert('RGB')
-        grid_width, grid_height = grid_img.size
-        tile_count = len(all_tiles)
-        cols = 4
-        rows = max(1, (tile_count + cols - 1) // cols)
-        tile_w = grid_width // cols
-        tile_h = grid_height // rows
-        selected_tiles: list[int] = []
-        append_trace(result, round=round_no, note=f'square entry provider={provider} tiles={tile_count} target={object_name} visionai_fn={visionai_rank_grid_tiles is not None}')
+    captcha_type = CaptchaType.SQUARE_4X4
 
-        if provider in ('visionai-local', 'gemini-cli-grid') and visionai_rank_grid_tiles is not None:
-            raw_ranked = visionai_rank_grid_tiles(grid_path, object_name, cols)
-            append_trace(result, round=round_no, note=f'visionai square raw ranked={raw_ranked}')
-            ranked_sorted = sorted(raw_ranked, key=lambda x: x[1], reverse=True)
-            for cell_num, confidence in ranked_sorted:
-                append_trace(result, round=round_no, note=f'visionai square tile {cell_num - 1} conf={confidence:.4f}')
+    GRID_SIZE = 450
 
-            high_conf = [(cell_num - 1, confidence) for cell_num, confidence in ranked_sorted if confidence >= self.config.conf_threshold]
-            medium_conf = [(cell_num - 1, confidence) for cell_num, confidence in ranked_sorted if confidence >= self.config.square_medium_confidence_threshold]
-            selected_tiles = [idx for idx, _ in high_conf]
+    def solve(self, browser: Any, target_class: int) -> list[int]:
+        """Solve a square 4x4 captcha using object detection.
 
-            if len(selected_tiles) > self.config.square_overselect_guard_threshold:
-                append_trace(result, round=round_no, note=f'visionai square overselect guard high_conf={selected_tiles}')
-                selected_tiles = [idx for idx, _ in medium_conf[:self.config.square_overselect_guard_threshold]]
+        Uses the YOLO detection model to find all instances of the target
+        across the full image, then maps detected bounding boxes to grid cells.
 
-            if len(selected_tiles) > self.config.square_max_confirmed_tiles:
-                confirmed_tiles: list[int] = []
-                for idx in selected_tiles:
-                    tile_path = f'{screenshots_dir}/tile_{round_no}_{idx}.png'
-                    row = idx // cols
-                    col = idx % cols
-                    left = col * tile_w
-                    top = row * tile_h
-                    right = (col + 1) * tile_w if col < cols - 1 else grid_width
-                    bottom = (row + 1) * tile_h if row < rows - 1 else grid_height
-                    grid_img.crop((left, top, right, bottom)).save(tile_path)
-                    result.artifacts.append(tile_path)
-                    _idx, should_click = check_tile_for_object((idx, tile_path, object_name, provider, model))
-                    if should_click:
-                        confirmed_tiles.append(idx)
-                append_trace(result, round=round_no, note=f'visionai square confirmation candidates={selected_tiles} confirmed={confirmed_tiles}')
-                if confirmed_tiles:
-                    selected_tiles = confirmed_tiles[:self.config.square_max_confirmed_tiles]
-                    append_trace(result, round=round_no, note=f'visionai square trimmed confirmed={selected_tiles}')
-                else:
-                    fallback_count = max(1, self.config.square_max_confirmed_tiles - 1)
-                    selected_tiles = [idx for idx, _ in medium_conf[:fallback_count]]
-                    append_trace(result, round=round_no, note=f'visionai square confirmation empty fallback={selected_tiles}')
+        Args:
+            browser: Browser instance from recaptcha_domain_replicator.
+            target_class: COCO class index.
 
-            append_trace(result, round=round_no, note=f'visionai square selected={selected_tiles}')
+        Returns:
+            List of cells that were clicked.
+        """
+        # Get target keyword and map to COCO class for detection
+        keyword = get_target_keyword(browser)
+        if not keyword:
+            self.logger.warning("Could not extract target keyword")
+            return []
 
-        if not selected_tiles:
-            for i in range(tile_count):
-                tile_path = f'{screenshots_dir}/tile_{round_no}_{i}.png'
-                row = i // cols
-                col = i % cols
-                left = col * tile_w
-                top = row * tile_h
-                right = (col + 1) * tile_w if col < cols - 1 else grid_width
-                bottom = (row + 1) * tile_h if row < rows - 1 else grid_height
-                grid_img.crop((left, top, right, bottom)).save(tile_path)
-                result.artifacts.append(tile_path)
-                _idx, should_click = check_tile_for_object((i, tile_path, object_name, provider, model))
-                if should_click:
-                    selected_tiles.append(i)
+        coco_class = self.detector.get_coco_target_class(keyword)
+        if coco_class is None:
+            self.logger.critical(f"Unknown target for detection: {keyword}")
+            return []
 
-        return sorted(set(selected_tiles))
+        self.logger.debug(f"Target: '{keyword}' -> COCO class {coco_class}")
+
+        # Get image URLs and download main image
+        img_urls = self.get_image_urls(browser)
+        if not img_urls:
+            self.logger.warning("No captcha images found")
+            return []
+
+        _, main_image = self.download_main_image(img_urls[0])
+
+        # Detect targets using full-image detection and map to grid cells
+        answers = self.detector.detect_for_grid(
+            main_image,
+            target_class=coco_class,
+            grid_size=self.GRID_SIZE,
+        )
+
+        if not answers:
+            self.logger.info("No targets detected")
+            return []
+
+        # Filter to valid cell range (1-16)
+        valid_answers = [a for a in answers if 1 <= a <= 16]
+
+        if not valid_answers:
+            self.logger.info("No valid targets in grid")
+            return []
+
+        self.logger.info(f"Targets detected in cells: {valid_answers}")
+
+        self.click_cells(browser, sorted(valid_answers, reverse=True))
+        self.human_delay(0.1, 0.2)
+
+        return valid_answers
